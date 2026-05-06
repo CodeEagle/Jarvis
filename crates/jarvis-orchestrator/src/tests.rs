@@ -743,6 +743,142 @@ fn activity_card_lifecycle() {
     assert!(done.completed_at.is_some());
 }
 
+// ── regression orchestrator (Section 30.3.3) ────────────────────────────
+
+#[cfg(test)]
+fn make_approved_doc(
+    walkthrough_store: &walkthrough::WalkthroughStore,
+    title: &str,
+) -> walkthrough::WalkthroughDoc {
+    let mut doc = walkthrough::new_draft("st_x", "sess_1", "coding", title);
+    doc.verification_status = walkthrough::VerificationStatus::Verified;
+    doc.approval_status = walkthrough::ApprovalStatus::Approved;
+    walkthrough_store.save(&doc).unwrap();
+    doc
+}
+
+#[test]
+fn regression_pass_when_no_changes() {
+    let db = Db::in_memory().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "ok").unwrap();
+    let walkthrough_store = walkthrough::WalkthroughStore::new(db.clone());
+    let doc = make_approved_doc(&walkthrough_store, "feature A");
+    let orch = regression::RegressionOrchestrator::new(db);
+
+    let plan = regression::RegressionPlan {
+        doc_id: doc.id.clone(),
+        feature_title: doc.title.clone(),
+        checks: vec![regression::RegressionCheckPlan {
+            check: verifier::VerifierCheck::new(
+                &doc.id,
+                "sec_1",
+                verifier::CheckType::FileExists,
+                "expect a.txt",
+            ),
+            target: std::path::PathBuf::from("a.txt"),
+            touched_in_changeset: false,
+        }],
+    };
+    let report = orch.run(dir.path(), Some("sess_1"), vec![plan]).unwrap();
+    assert_eq!(report.total_checks, 1);
+    assert_eq!(report.passed, 1);
+    assert_eq!(report.potential_bugs, 0);
+    assert_eq!(report.items[0].status, regression::ItemStatus::Pass);
+}
+
+#[test]
+fn regression_classifies_touched_failure_as_expected_change() {
+    let db = Db::in_memory().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    // file is missing — verification fails
+    let walkthrough_store = walkthrough::WalkthroughStore::new(db.clone());
+    let doc = make_approved_doc(&walkthrough_store, "feature A");
+    let orch = regression::RegressionOrchestrator::new(db);
+
+    let plan = regression::RegressionPlan {
+        doc_id: doc.id.clone(),
+        feature_title: doc.title.clone(),
+        checks: vec![regression::RegressionCheckPlan {
+            check: verifier::VerifierCheck::new(
+                &doc.id,
+                "sec_1",
+                verifier::CheckType::FileExists,
+                "expect missing.txt",
+            ),
+            target: std::path::PathBuf::from("missing.txt"),
+            touched_in_changeset: true,
+        }],
+    };
+    let report = orch.run(dir.path(), Some("sess_1"), vec![plan]).unwrap();
+    assert_eq!(report.expected_changes, 1);
+    assert_eq!(report.potential_bugs, 0);
+    assert_eq!(
+        report.items[0].status,
+        regression::ItemStatus::ExpectedChange
+    );
+}
+
+#[test]
+fn regression_classifies_untouched_failure_as_potential_bug() {
+    let db = Db::in_memory().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let walkthrough_store = walkthrough::WalkthroughStore::new(db.clone());
+    let doc = make_approved_doc(&walkthrough_store, "feature A");
+    let orch = regression::RegressionOrchestrator::new(db);
+
+    let plan = regression::RegressionPlan {
+        doc_id: doc.id.clone(),
+        feature_title: doc.title.clone(),
+        checks: vec![regression::RegressionCheckPlan {
+            check: verifier::VerifierCheck::new(
+                &doc.id,
+                "sec_1",
+                verifier::CheckType::FileExists,
+                "expect missing.txt",
+            ),
+            target: std::path::PathBuf::from("missing.txt"),
+            touched_in_changeset: false,
+        }],
+    };
+    let report = orch.run(dir.path(), Some("sess_1"), vec![plan]).unwrap();
+    assert_eq!(report.potential_bugs, 1);
+    assert_eq!(
+        report.items[0].status,
+        regression::ItemStatus::PotentialBug
+    );
+}
+
+#[test]
+fn regression_skips_unapproved_walkthrough() {
+    let db = Db::in_memory().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let walkthrough_store = walkthrough::WalkthroughStore::new(db.clone());
+    // Doc not approved
+    let mut doc = walkthrough::new_draft("st_y", "sess_1", "coding", "feature B");
+    doc.verification_status = walkthrough::VerificationStatus::Verified;
+    walkthrough_store.save(&doc).unwrap();
+    let orch = regression::RegressionOrchestrator::new(db);
+
+    let plan = regression::RegressionPlan {
+        doc_id: doc.id.clone(),
+        feature_title: doc.title.clone(),
+        checks: vec![regression::RegressionCheckPlan {
+            check: verifier::VerifierCheck::new(
+                &doc.id,
+                "sec_1",
+                verifier::CheckType::FileExists,
+                "expect anything.txt",
+            ),
+            target: std::path::PathBuf::from("anything.txt"),
+            touched_in_changeset: false,
+        }],
+    };
+    let report = orch.run(dir.path(), None, vec![plan]).unwrap();
+    assert_eq!(report.total_checks, 0); // skipped
+    assert_eq!(report.items.len(), 0);
+}
+
 // suppress unused import warning when sub_task module is not used in tests
 #[test]
 fn sub_task_envelope_serializes() {

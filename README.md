@@ -61,7 +61,7 @@ crates/
                         growth events / growth artifacts
 ```
 
-**139 unit tests pass** across the workspace.
+**151 unit tests pass** across the workspace.
 
 ---
 
@@ -132,16 +132,18 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 ```
 jarvis-core         13 tests
 jarvis-db           13 tests   (incl. session_snapshot immutability)
-jarvis-memory       20 tests
+jarvis-memory       28 tests   (incl. cold-start retire, lint duplicates/
+                               scratch/inference/lessons, FTS5 keyword
+                               retrieval)
 jarvis-tools         8 tests
 jarvis-growth       10 tests
-jarvis-orchestrator 38 tests   (incl. workspace lock, walkthrough auto-
+jarvis-orchestrator 42 tests   (incl. workspace lock, walkthrough auto-
                                approval, verifier file checks, activity
-                               card lifecycle)
+                               card lifecycle, regression classifier)
 jarvis-router       28 tests
 jarvis-control       9 tests
 ─────────────────
-TOTAL              139 tests
+TOTAL              151 tests
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,
@@ -170,11 +172,16 @@ etc.
 - ⬜ LLM judgment layer (currently rule-only)
 - ⬜ Sub-agent dispatch with worker-process driver
 
-### v0.3
+### v0.3 (in progress)
 - ✅ WalkthroughDoc + auto-approval policy (data layer in v0.2)
 - ✅ VerifierAgent + file_exists / file_content checks (v0.2)
+- ✅ RegressionOrchestrator with expected_change vs potential_bug
+  classification (this commit)
+- ✅ ColdStartSnapshot capture + retire (this commit)
+- ✅ Memory Lint (duplicates, stale scratch, expired inference, weak
+  lessons, conflict dampening) — Dream "tidy" layer (this commit)
+- ✅ Hybrid retrieval: FTS5 + Jaccard + emotion resonance + trust score
 - ⬜ Test/lint runners through ToolRuntime
-- ⬜ RegressionOrchestrator (parallel re-verification)
 - ⬜ Codex steer adapter
 - ⬜ soft / hard / async interrupt with Watchdog escalation
 

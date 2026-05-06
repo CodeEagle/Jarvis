@@ -9,6 +9,7 @@ pub mod activity_card;
 pub mod artifact_registry;
 pub mod checkpoint;
 pub mod conversation_bus;
+pub mod regression;
 pub mod steer;
 pub mod sub_task;
 pub mod task_tree;
@@ -25,6 +26,10 @@ pub use steer::*;
 pub use sub_task::*;
 pub use task_tree::*;
 pub use tentacle::*;
+pub use regression::{
+    DiscrepancyItem, ItemStatus, RegressionCheckPlan, RegressionItem,
+    RegressionOrchestrator, RegressionPlan, RegressionReport,
+};
 pub use verifier::{
     execute_check as execute_verifier_check, run as run_verifier,
     CheckType, VerifierCheck, VerifierReport, VerifierStore,

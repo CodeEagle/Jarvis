@@ -489,6 +489,55 @@ CREATE TABLE IF NOT EXISTS cold_start_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_cold_start_session
     ON cold_start_snapshots (session_id, created_at DESC);
+
+-- ─── FTS5 index over memories.content (Section 13.4 v0.1 → 21.3) ───────
+-- We model the FTS index as a side table whose rowid mirrors the
+-- `memories.rowid`, so callers can correlate hits without depending
+-- on FTS internals. Population/clean-up happens in trigger pairs so
+-- writes anywhere in `memories` keep the index in sync.
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    content,
+    entities,
+    content_id UNINDEXED
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_memories_fts_ai
+    AFTER INSERT ON memories
+    BEGIN
+        INSERT INTO memories_fts (rowid, content, entities, content_id)
+        VALUES (new.rowid, new.content, new.entities_json, new.id);
+    END;
+
+CREATE TRIGGER IF NOT EXISTS trg_memories_fts_ad
+    AFTER DELETE ON memories
+    BEGIN
+        DELETE FROM memories_fts WHERE rowid = old.rowid;
+    END;
+
+CREATE TRIGGER IF NOT EXISTS trg_memories_fts_au
+    AFTER UPDATE OF content, entities_json ON memories
+    BEGIN
+        DELETE FROM memories_fts WHERE rowid = old.rowid;
+        INSERT INTO memories_fts (rowid, content, entities, content_id)
+        VALUES (new.rowid, new.content, new.entities_json, new.id);
+    END;
+
+-- ─── regression reports (Section 8.16.5 / 21) ──────────────────────────
+
+CREATE TABLE IF NOT EXISTS regression_reports (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT,
+    triggered_at    TEXT NOT NULL,
+    total_checks    INTEGER NOT NULL DEFAULT 0,
+    passed          INTEGER NOT NULL DEFAULT 0,
+    expected_changes INTEGER NOT NULL DEFAULT 0,
+    potential_bugs  INTEGER NOT NULL DEFAULT 0,
+    items_json      TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE INDEX IF NOT EXISTS idx_regression_reports_time
+    ON regression_reports (triggered_at DESC);
 "#;
 
 pub fn run(conn: &Connection) -> DbResult<()> {

@@ -5,10 +5,15 @@
 //! vector retrieval will be added once the storage layer ships sqlite-vec
 //! support; until then this gives us deterministic, testable recall.
 
+pub mod cold_start;
 pub mod compression;
+pub mod lint;
 pub mod manager;
 pub mod retrieval;
 pub mod trust;
+
+pub use cold_start::{ColdStartSnapshot, ColdStartStore, SnapshotInputs};
+pub use lint::{LintReport, MemoryLint};
 
 pub use compression::*;
 pub use manager::{MemoryManager, WriteOutcome};

@@ -186,6 +186,33 @@ fn seed(mgr: &MemoryManager, content: &str, scope: &str) {
 }
 
 #[test]
+fn fts5_retrieval_finds_keyword_match() {
+    let mgr = fresh_manager();
+    seed(&mgr, "openwrt dns hosts diagnostic", "global");
+    seed(&mgr, "react ssr hydration", "global");
+    seed(&mgr, "flutter isolate streaming", "global");
+    let r = retrieval::Retrieval::new(mgr.db().clone());
+    let results = r
+        .retrieve("global", "openwrt", None, 5, 0.0)
+        .unwrap();
+    assert!(!results.is_empty());
+    assert!(results[0].memory.content.contains("openwrt"));
+    // FTS path should have produced a non-zero score.
+    assert!(results[0].fts > 0.0);
+}
+
+#[test]
+fn fts5_query_ignores_punctuation() {
+    let mgr = fresh_manager();
+    seed(&mgr, "用户偏好 Riverpod 状态管理", "global");
+    let r = retrieval::Retrieval::new(mgr.db().clone());
+    let results = r
+        .retrieve("global", "Riverpod 状态管理 ?!", None, 5, 0.0)
+        .unwrap();
+    assert!(!results.is_empty());
+}
+
+#[test]
 fn retrieval_returns_top_match_for_token_overlap() {
     let mgr = fresh_manager();
     seed(&mgr, "openwrt dns resolution debug", "global");
@@ -354,6 +381,228 @@ fn turn_summary_writes_and_lists() {
     let listed = store.list_turn_summaries("sess_1", 10).unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].user_goal, "fix DNS");
+}
+
+// ── cold-start snapshot ─────────────────────────────────────────────────
+
+#[test]
+fn cold_start_snapshot_capture_and_active() {
+    let db = Db::in_memory().unwrap();
+    let store = cold_start::ColdStartStore::new(db);
+    let snap = store
+        .capture(cold_start::SnapshotInputs {
+            session_id: "sess_1",
+            rolling_summary: "v1",
+            recent_messages: &["hi".into()],
+            memory_hits: &["mem_1".into()],
+            cross_session: &[],
+            valid_for_turns: 5,
+        })
+        .unwrap();
+    assert_eq!(snap.used_turns, 0);
+    let active = store.active_for("sess_1").unwrap().unwrap();
+    assert_eq!(active.id, snap.id);
+}
+
+#[test]
+fn cold_start_snapshot_retires_after_used_turns() {
+    let db = Db::in_memory().unwrap();
+    let store = cold_start::ColdStartStore::new(db);
+    let snap = store
+        .capture(cold_start::SnapshotInputs {
+            session_id: "sess_1",
+            rolling_summary: "v1",
+            recent_messages: &[],
+            memory_hits: &[],
+            cross_session: &[],
+            valid_for_turns: 2,
+        })
+        .unwrap();
+    store.touch(&snap.id).unwrap();
+    store.touch(&snap.id).unwrap();
+    let active = store.active_for("sess_1").unwrap();
+    assert!(active.is_none(), "snapshot should retire after used_turns >= valid_for_turns");
+}
+
+// ── memory lint (Section 30.8) ──────────────────────────────────────────
+
+#[cfg(test)]
+fn write_memory(mgr: &MemoryManager, content: &str, ty: MemoryType) -> String {
+    let outcome = mgr
+        .write(manager::WriteRequest {
+            r#type: ty,
+            scope: "global",
+            content,
+            entities: vec![],
+            source_type: SourceType::UserExplicit,
+            source_trace_id: None,
+            tier: 1,
+            emotion_energy: 0.0,
+            emotion_polarity: EmotionPolarity::Neutral,
+            reason: None,
+        })
+        .unwrap();
+    outcome.id
+}
+
+#[test]
+fn lint_deprecates_duplicate_keeping_higher_trust() {
+    let mgr = fresh_manager();
+    let id1 = write_memory(&mgr, "用户喜欢简洁代码风格", MemoryType::PreferenceMemory);
+    let _id2 = write_memory(&mgr, "用户偏好简洁代码风格", MemoryType::PreferenceMemory);
+
+    // Manually nudge id2's trust score lower to ensure it loses.
+    let mut victim = jarvis_db::memory_repo::get(mgr.db(), &_id2).unwrap().unwrap();
+    victim.trust_score = 0.3;
+    jarvis_db::memory_repo::upsert(
+        mgr.db(),
+        &victim,
+        jarvis_db::memory_repo::WriteOpts {
+            change_type: MemoryChangeType::TrustScoreUpdated,
+            source_module: None,
+            reason: None,
+        },
+    )
+    .unwrap();
+
+    let policy = lint::LintPolicy {
+        similarity_threshold: 0.55,
+        ..lint::LintPolicy::defaults()
+    };
+    let lint = lint::MemoryLint::with_policy(mgr.db().clone(), policy);
+    let report = lint.run("global").unwrap();
+    assert!(report.duplicates_deprecated >= 1);
+
+    let kept = jarvis_db::memory_repo::get(mgr.db(), &id1).unwrap().unwrap();
+    assert_eq!(kept.status, MemoryStatus::Approved);
+}
+
+#[test]
+fn lint_purges_aged_scratch() {
+    let db = Db::in_memory().unwrap();
+    // write scratch directly with backdated created_at.
+    let m = jarvis_core::memory::Memory {
+        id: "scratch_x".into(),
+        r#type: MemoryType::ScratchMemory,
+        scope: "global".into(),
+        content: "transient note".into(),
+        entities: vec![],
+        confidence: 0.3,
+        trust_score: 0.3,
+        half_life_days: 0,
+        retrieve_count: 0,
+        last_retrieved_at: None,
+        source_trace_id: None,
+        source_type: SourceType::Inferred,
+        conflict_ids: vec![],
+        status: MemoryStatus::Approved,
+        emotion_energy: 0.0,
+        emotion_polarity: EmotionPolarity::Neutral,
+        tier: 4,
+        expires_at: None,
+        cluster_member_ids: vec![],
+        created_at: now() - chrono::Duration::hours(48),
+        updated_at: now(),
+    };
+    jarvis_db::memory_repo::upsert(
+        &db,
+        &m,
+        jarvis_db::memory_repo::WriteOpts {
+            change_type: MemoryChangeType::Created,
+            source_module: None,
+            reason: None,
+        },
+    )
+    .unwrap();
+    let lint = lint::MemoryLint::new(db.clone());
+    let report = lint.run("global").unwrap();
+    assert_eq!(report.scratch_purged, 1);
+    let after = jarvis_db::memory_repo::get(&db, "scratch_x").unwrap().unwrap();
+    assert_eq!(after.status, MemoryStatus::Deprecated);
+}
+
+#[test]
+fn lint_expires_inference_memory_past_expiry() {
+    let db = Db::in_memory().unwrap();
+    let m = jarvis_core::memory::Memory {
+        id: "inf_x".into(),
+        r#type: MemoryType::InferenceMemory,
+        scope: "global".into(),
+        content: "用户每天上午开始工作".into(),
+        entities: vec![],
+        confidence: 0.5,
+        trust_score: 0.5,
+        half_life_days: 30,
+        retrieve_count: 0,
+        last_retrieved_at: None,
+        source_trace_id: None,
+        source_type: SourceType::DreamInference,
+        conflict_ids: vec![],
+        status: MemoryStatus::Approved,
+        emotion_energy: 0.0,
+        emotion_polarity: EmotionPolarity::Neutral,
+        tier: 3,
+        expires_at: Some(now() - chrono::Duration::days(1)),
+        cluster_member_ids: vec![],
+        created_at: now() - chrono::Duration::days(60),
+        updated_at: now(),
+    };
+    jarvis_db::memory_repo::upsert(
+        &db,
+        &m,
+        jarvis_db::memory_repo::WriteOpts {
+            change_type: MemoryChangeType::Created,
+            source_module: None,
+            reason: None,
+        },
+    )
+    .unwrap();
+    let lint = lint::MemoryLint::new(db.clone());
+    let report = lint.run("global").unwrap();
+    assert_eq!(report.inferences_expired, 1);
+    let after = jarvis_db::memory_repo::get(&db, "inf_x").unwrap().unwrap();
+    assert_eq!(after.status, MemoryStatus::Deprecated);
+}
+
+#[test]
+fn lint_demotes_weak_unread_lesson() {
+    let db = Db::in_memory().unwrap();
+    let m = jarvis_core::memory::Memory {
+        id: "lesson_x".into(),
+        r#type: MemoryType::LessonMemory,
+        scope: "global".into(),
+        content: "never modify generated files".into(),
+        entities: vec![],
+        confidence: 0.05, // very low → trust below threshold
+        trust_score: 0.05,
+        half_life_days: 90,
+        retrieve_count: 0,
+        last_retrieved_at: None,
+        source_trace_id: None,
+        source_type: SourceType::Correction,
+        conflict_ids: vec![],
+        status: MemoryStatus::Approved,
+        emotion_energy: 0.0,
+        emotion_polarity: EmotionPolarity::Neutral,
+        tier: 3,
+        expires_at: None,
+        cluster_member_ids: vec![],
+        created_at: now(),
+        updated_at: now(),
+    };
+    jarvis_db::memory_repo::upsert(
+        &db,
+        &m,
+        jarvis_db::memory_repo::WriteOpts {
+            change_type: MemoryChangeType::Created,
+            source_module: None,
+            reason: None,
+        },
+    )
+    .unwrap();
+    let lint = lint::MemoryLint::new(db.clone());
+    let report = lint.run("global").unwrap();
+    assert!(report.weak_lessons_demoted >= 1);
 }
 
 #[test]
