@@ -1,0 +1,345 @@
+#[cfg(test)]
+use crate::*;
+#[cfg(test)]
+use chrono::Duration;
+#[cfg(test)]
+use jarvis_core::route::SessionAction;
+#[cfg(test)]
+use jarvis_core::session::{Session, SessionStatus};
+#[cfg(test)]
+use jarvis_core::time::now;
+#[cfg(test)]
+use jarvis_db::Db;
+
+// ── intent rules (Section 30.1.1) ───────────────────────────────────────
+
+#[test]
+fn devops_keyword_emits_devops_networking_hint() {
+    let hints = intent::apply_rules("OpenWrt hosts 解析不生效");
+    let names: Vec<&str> = hints.iter().map(|h| h.hint.as_str()).collect();
+    assert!(names.contains(&"devops.networking"));
+}
+
+#[test]
+fn coding_keyword_emits_coding_debug_hint() {
+    let hints = intent::apply_rules("这个报错帮我看看");
+    let names: Vec<&str> = hints.iter().map(|h| h.hint.as_str()).collect();
+    assert!(names.contains(&"coding.debug"));
+}
+
+#[test]
+fn memory_update_keyword_emits_memory_hint() {
+    let hints = intent::apply_rules("记住我不喜欢用 class component");
+    let names: Vec<&str> = hints.iter().map(|h| h.hint.as_str()).collect();
+    assert!(names.contains(&"memory.update"));
+}
+
+#[test]
+fn creative_rule_uses_creative_icon_not_design() {
+    // Section 30.1.1: regression check that we removed `creative.design`.
+    let hints = intent::apply_rules("帮我生成一个图标 prompt");
+    let names: Vec<&str> = hints.iter().map(|h| h.hint.as_str()).collect();
+    assert!(names.contains(&"creative.icon"));
+    assert!(!names.contains(&"creative.design"));
+}
+
+#[test]
+fn no_rule_match_returns_empty() {
+    let hints = intent::apply_rules("今天天气怎么样");
+    assert!(hints.is_empty());
+}
+
+// ── session resolver (Section 30.1.2) ───────────────────────────────────
+
+#[test]
+fn score_uses_correct_weights() {
+    let s = session_resolver::score(&session_resolver::SessionScoreInputs {
+        semantic_similarity: 0.8,
+        recency_score: 0.9,
+        entity_overlap: 0.7,
+    });
+    let expected = 0.8 * 0.40 + 0.9 * 0.30 + 0.7 * 0.30;
+    assert!((s - expected).abs() < 1e-5);
+}
+
+#[test]
+fn score_above_threshold_continues() {
+    let d = session_resolver::decide(Some("sess_1"), 0.80);
+    match d {
+        session_resolver::SessionDecision::ContinueExisting {
+            clarification_needed,
+            ..
+        } => assert!(!clarification_needed),
+        other => panic!("expected continue, got {other:?}"),
+    }
+}
+
+#[test]
+fn score_below_low_threshold_creates_new() {
+    let d = session_resolver::decide(Some("sess_1"), 0.40);
+    assert_eq!(d, session_resolver::SessionDecision::CreateNew);
+}
+
+#[test]
+fn score_in_band_continues_with_clarification() {
+    let d = session_resolver::decide(Some("sess_1"), 0.60);
+    match d {
+        session_resolver::SessionDecision::ContinueExisting {
+            clarification_needed,
+            ..
+        } => assert!(clarification_needed),
+        other => panic!("expected continue with clarification, got {other:?}"),
+    }
+}
+
+#[test]
+fn explicit_reference_detection() {
+    assert!(session_resolver::has_explicit_reference("继续刚才那个"));
+    assert!(session_resolver::has_explicit_reference("继续"));
+    assert!(!session_resolver::has_explicit_reference("帮我重构"));
+}
+
+#[test]
+fn recency_decays_to_zero_after_two_weeks() {
+    let n = now();
+    let fresh = session_resolver::recency_score(n, n);
+    let mid = session_resolver::recency_score(n - Duration::days(7), n);
+    let old = session_resolver::recency_score(n - Duration::days(30), n);
+    assert!((fresh - 1.0).abs() < 1e-6);
+    assert!(mid > 0.0 && mid < 1.0);
+    assert_eq!(old, 0.0);
+}
+
+// ── @mention parsing (Section 30.15.1) ──────────────────────────────────
+
+fn registry() -> Vec<jarvis_core::agent::AgentDefinition> {
+    agent_registry::builtin_agents()
+}
+
+#[test]
+fn no_mention_returns_none_mode() {
+    let r = mention::parse_mentions("帮我重构 sync 模块", &registry());
+    assert_eq!(r.mention_mode, jarvis_core::mention::MentionMode::None);
+    assert_eq!(r.clean_input, "帮我重构 sync 模块");
+    assert!(r.mentions.is_empty());
+}
+
+#[test]
+fn single_mention_resolves_by_display_name() {
+    let r = mention::parse_mentions("@代码助手 帮我重构", &registry());
+    assert_eq!(r.mention_mode, jarvis_core::mention::MentionMode::Single);
+    assert_eq!(r.mentions[0].resolved_type.as_deref(), Some("coding"));
+    assert_eq!(r.clean_input, "帮我重构");
+}
+
+#[test]
+fn alias_mention_resolves() {
+    let r = mention::parse_mentions("@coding 帮我", &registry());
+    assert_eq!(r.mentions[0].resolved_type.as_deref(), Some("coding"));
+}
+
+#[test]
+fn multi_mention_returns_multi_mode() {
+    let r = mention::parse_mentions("@代码助手 @研究助手 重构并搜索方案", &registry());
+    assert_eq!(r.mention_mode, jarvis_core::mention::MentionMode::Multi);
+    let resolved: Vec<&str> = r
+        .mentions
+        .iter()
+        .filter_map(|m| m.resolved_type.as_deref())
+        .collect();
+    assert!(resolved.contains(&"coding"));
+    assert!(resolved.contains(&"research"));
+}
+
+#[test]
+fn unknown_agent_is_unresolved() {
+    let r = mention::parse_mentions("@测试助手 帮我跑测试", &registry());
+    assert!(r.mentions[0].unresolved);
+    assert_eq!(r.mention_mode, jarvis_core::mention::MentionMode::None);
+}
+
+#[test]
+fn jarvis_orchestrator_is_not_mentionable() {
+    let r = mention::parse_mentions("@Jarvis 帮我", &registry());
+    assert!(r.mentions[0].unresolved);
+}
+
+#[test]
+fn verifier_is_not_mentionable() {
+    let r = mention::parse_mentions("@核查助手 验证一下", &registry());
+    assert!(r.mentions[0].unresolved);
+}
+
+// ── Router integration ──────────────────────────────────────────────────
+
+fn fresh_db() -> Db {
+    Db::in_memory().unwrap()
+}
+
+#[test]
+fn route_writes_raw_event_log_first() {
+    let db = fresh_db();
+    let r = Router::new(db.clone());
+    let (_decision, diag) = r
+        .route(RouterInput {
+            user_input: "OpenWrt hosts 解析问题",
+            session_id_hint: None,
+            running_agent_types: &[],
+        })
+        .unwrap();
+    assert!(diag.raw_event_seq >= 1);
+    let evt = jarvis_db::raw_event_log::get(&db, diag.raw_event_seq).unwrap();
+    assert_eq!(evt.event_type, "user_message");
+    assert_eq!(evt.raw_content, "OpenWrt hosts 解析问题");
+    assert!(evt.verify(), "checksum should validate");
+}
+
+#[test]
+fn route_devops_input_picks_devops_agent() {
+    let db = fresh_db();
+    let r = Router::new(db);
+    let (decision, _) = r
+        .route(RouterInput {
+            user_input: "OpenWrt DNS hosts 文件不生效",
+            session_id_hint: None,
+            running_agent_types: &[],
+        })
+        .unwrap();
+    assert_eq!(decision.agent_type, "devops");
+    assert_eq!(decision.domain, "devops");
+}
+
+#[test]
+fn route_mention_overrides_agent_type() {
+    let db = fresh_db();
+    let r = Router::new(db);
+    // input looks like devops, but @ specifies coding
+    let (decision, _) = r
+        .route(RouterInput {
+            user_input: "@代码助手 帮我看看这个 openwrt 相关的代码",
+            session_id_hint: None,
+            running_agent_types: &[],
+        })
+        .unwrap();
+    assert_eq!(decision.agent_type, "coding");
+    assert!(decision.mention_override);
+    assert!(decision.router_notes.contains("user @ specified"));
+}
+
+#[test]
+fn route_multi_mention_forces_orchestrator() {
+    let db = fresh_db();
+    let r = Router::new(db);
+    let (decision, _) = r
+        .route(RouterInput {
+            user_input: "@代码助手 @研究助手 重构并搜索方案",
+            session_id_hint: None,
+            running_agent_types: &[],
+        })
+        .unwrap();
+    assert_eq!(decision.agent_type, "orchestrator");
+    assert!(decision.forced_sub_agents.contains(&"coding".to_string()));
+    assert!(decision.forced_sub_agents.contains(&"research".to_string()));
+    assert!(decision.mention_override);
+}
+
+#[test]
+fn route_steer_when_mentioned_agent_running() {
+    let db = fresh_db();
+    let r = Router::new(db);
+    let running = vec!["coding".to_string()];
+    let (decision, _) = r
+        .route(RouterInput {
+            user_input: "@代码助手 记得保持 stream 接口不变",
+            session_id_hint: None,
+            running_agent_types: &running,
+        })
+        .unwrap();
+    assert_eq!(decision.override_action.as_deref(), Some("steer"));
+    assert!(decision.steer_content.is_some());
+}
+
+#[test]
+fn route_unresolved_mention_continues_normally() {
+    let db = fresh_db();
+    let r = Router::new(db);
+    let (decision, diag) = r
+        .route(RouterInput {
+            user_input: "@测试助手 帮我跑单元测试",
+            session_id_hint: None,
+            running_agent_types: &[],
+        })
+        .unwrap();
+    // Mention can't be resolved but routing must still complete.
+    assert!(!decision.agent_type.is_empty());
+    assert!(diag.mention_warning.is_some());
+    let warn = diag.mention_warning.unwrap();
+    assert!(warn.contains("@代码助手") || warn.contains("@运维助手"));
+}
+
+#[test]
+fn route_explicit_reference_continues_existing_session() {
+    let db = fresh_db();
+    let n = now();
+    jarvis_db::session_repo::upsert_session(
+        &db,
+        &Session {
+            id: "sess_old".into(),
+            title: "old".into(),
+            domain: "coding".into(),
+            topic: "sync 重构".into(),
+            summary: "正在重构 sync".into(),
+            long_summary: "已完成 sync_state.dart, 还差 sync_executor.dart".into(),
+            active_entities: vec!["sync".into()],
+            unresolved: vec!["完成 sync_executor.dart".into()],
+            resolved: vec![],
+            recent_message_ids: vec![],
+            memory_refs: vec![],
+            skill_refs: vec![],
+            status: SessionStatus::Active,
+            created_at: n,
+            updated_at: n,
+            last_active_at: n,
+        },
+    )
+    .unwrap();
+
+    let r = Router::new(db);
+    let (decision, _) = r
+        .route(RouterInput {
+            user_input: "继续刚才的重构",
+            session_id_hint: None,
+            running_agent_types: &[],
+        })
+        .unwrap();
+    assert_eq!(decision.session_action, SessionAction::ContinueExisting);
+    assert_eq!(decision.target_session_id.as_deref(), Some("sess_old"));
+}
+
+#[test]
+fn confidence_never_reaches_one() {
+    let db = fresh_db();
+    let r = Router::new(db);
+    let (decision, _) = r
+        .route(RouterInput {
+            user_input: "OpenWrt DNS 报错",
+            session_id_hint: None,
+            running_agent_types: &[],
+        })
+        .unwrap();
+    assert!(decision.confidence < 1.0);
+}
+
+#[test]
+fn mention_log_records_unresolved_mentions() {
+    let db = fresh_db();
+    let r = Router::new(db.clone());
+    r.route(RouterInput {
+        user_input: "@测试助手 帮我",
+        session_id_hint: Some("sess_x"),
+        running_agent_types: &[],
+    })
+    .unwrap();
+    let n = jarvis_db::mention_log::count_unresolved(&db).unwrap();
+    assert!(n >= 1);
+}

@@ -1,0 +1,202 @@
+//! Jarvis CLI.
+//!
+//! Subcommands:
+//!   route <input>       - run the Router and print the RouteDecision
+//!   chat                - interactive REPL going through the Control Plane
+//!   memory write <text> - record a user-explicit memory
+//!   memory list         - list memories in scope `global`
+//!   raw-log <session>   - dump raw_event_log entries for a session
+//!
+//! Storage defaults to `./jarvis.db`; override with `JARVIS_DB`.
+
+use std::env;
+use std::io::{self, BufRead, Write};
+
+use jarvis_control::ControlPlane;
+use jarvis_core::memory::{EmotionPolarity, MemoryType, SourceType};
+use jarvis_db::Db;
+use jarvis_memory::{
+    manager::{MemoryManager, WriteRequest},
+    Retrieval,
+};
+use jarvis_router::{Router, RouterInput};
+use tracing_subscriber::EnvFilter;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_target(false)
+        .init();
+
+    let args: Vec<String> = env::args().collect();
+    let db_path = env::var("JARVIS_DB").unwrap_or_else(|_| "jarvis.db".into());
+    let db = Db::open(&db_path)?;
+
+    match args.get(1).map(String::as_str) {
+        Some("route") => {
+            let input = args
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| "帮我看个 OpenWrt 的报错".into());
+            let r = Router::new(db);
+            let (decision, diag) = r.route(RouterInput {
+                user_input: &input,
+                session_id_hint: None,
+                running_agent_types: &[],
+            })?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&decision).unwrap_or_default()
+            );
+            eprintln!("\n— diagnostics —");
+            eprintln!("rule_hints: {:?}", diag.rule_hints);
+            eprintln!("mention:    {:?}", diag.mention.mention_mode);
+            eprintln!("raw_seq:    {}", diag.raw_event_seq);
+            if let Some(w) = diag.mention_warning {
+                eprintln!("warning:    {w}");
+            }
+        }
+        Some("chat") => chat_repl(db).await?,
+        Some("memory") => memory_command(db, &args[2..])?,
+        Some("raw-log") => raw_log_command(db, &args[2..])?,
+        _ => {
+            print_usage();
+        }
+    }
+    Ok(())
+}
+
+async fn chat_repl(db: Db) -> anyhow::Result<()> {
+    let cp = ControlPlane::new(db);
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    println!("Jarvis v0.1 — chat REPL. Type :quit to exit.");
+
+    loop {
+        print!("> ");
+        stdout.flush()?;
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == ":quit" {
+            break;
+        }
+        let resp = cp
+            .handle_user_input(line.to_string(), None, vec![])
+            .await;
+        match resp {
+            jarvis_control::HandledResponse::Resolved {
+                decision,
+                diagnostics_summary,
+                kind,
+                elapsed_ms,
+            } => {
+                println!(
+                    "[{:?} · {}ms] {} → agent={} confidence={:.2}",
+                    kind, elapsed_ms, decision.primary_intent, decision.agent_type, decision.confidence
+                );
+                if decision.clarification_needed {
+                    println!(
+                        "  ↳ clarification needed: {}",
+                        decision.router_notes
+                    );
+                }
+                if decision.mention_override {
+                    println!("  ↳ user @ specified {}", decision.agent_type);
+                }
+                eprintln!("  diag: {diagnostics_summary}");
+            }
+            jarvis_control::HandledResponse::Fallback {
+                message,
+                elapsed_ms,
+            } => {
+                println!("[fallback · {elapsed_ms}ms] {message}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn memory_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+    match args.first().map(String::as_str) {
+        Some("write") => {
+            let content = args
+                .iter()
+                .skip(1)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            anyhow::ensure!(!content.is_empty(), "memory write requires content");
+            let mgr = MemoryManager::new(db);
+            let outcome = mgr.write(WriteRequest {
+                r#type: MemoryType::PreferenceMemory,
+                scope: "global",
+                content: &content,
+                entities: vec![],
+                source_type: SourceType::UserExplicit,
+                source_trace_id: None,
+                tier: 1,
+                emotion_energy: 0.0,
+                emotion_polarity: EmotionPolarity::Neutral,
+                reason: Some("CLI"),
+            })?;
+            println!(
+                "wrote {} status={:?} trust={:.2}",
+                outcome.id, outcome.status, outcome.trust_score
+            );
+        }
+        Some("list") => {
+            let r = Retrieval::new(db);
+            let results = r.retrieve("global", "", None, 50, 0.0)?;
+            for hit in results {
+                println!(
+                    "[{}] {} trust={:.2}",
+                    hit.memory.r#type.as_str(),
+                    hit.memory.content,
+                    hit.trust_now
+                );
+            }
+        }
+        _ => {
+            println!("Usage: memory write <text> | memory list");
+        }
+    }
+    Ok(())
+}
+
+fn raw_log_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+    let session = args.first().cloned().unwrap_or_default();
+    anyhow::ensure!(!session.is_empty(), "raw-log requires <session_id>");
+    let rows = jarvis_db::raw_event_log::list_for_session(&db, &session, 100)?;
+    for row in rows {
+        println!(
+            "{:>5} {} [{}] {}",
+            row.seq,
+            row.ts.to_rfc3339(),
+            row.event_type,
+            row.raw_content
+        );
+    }
+    Ok(())
+}
+
+fn print_usage() {
+    println!("Jarvis v0.1 CLI
+
+Commands:
+  jarvis route <input>          run Router and print decision
+  jarvis chat                   interactive REPL
+  jarvis memory write <text>    record a user-explicit memory
+  jarvis memory list            list memories
+  jarvis raw-log <session_id>   dump raw_event_log
+
+Env:
+  JARVIS_DB                     path to sqlite file (default: ./jarvis.db)
+");
+}

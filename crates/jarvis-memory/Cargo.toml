@@ -1,0 +1,14 @@
+[package]
+name = "jarvis-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+jarvis-core.workspace = true
+jarvis-db.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true

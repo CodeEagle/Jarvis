@@ -1,0 +1,16 @@
+[package]
+name = "jarvis-db"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+jarvis-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tracing.workspace = true
