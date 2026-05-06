@@ -142,20 +142,19 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 
 ```
 jarvis-core         13 tests
-jarvis-db           24 tests
+jarvis-db           26 tests   (+2: outbox enqueue/drain + monotonic seq)
 jarvis-memory       40 tests
-jarvis-tools        13 tests   (+3: plugin install / duplicate id /
-                               unregister provenance)
+jarvis-tools        18 tests   (+5: sandbox deny_all / allow / forbidden /
+                               args-too-long / cwd restriction)
 jarvis-growth       21 tests
-jarvis-orchestrator 66 tests   (+2: walkthrough manual approve / reject)
+jarvis-orchestrator 66 tests
 jarvis-router       38 tests
 jarvis-control      11 tests
-jarvis-api           7 tests   (+1: session messages endpoint)
+jarvis-api           9 tests   (+2: dashboard metrics + SSE end-to-end)
 jarvis-anthropic     5 tests
-jarvis-openai        3 tests   (NEW: well-formed response, 500 → None,
-                               Bearer authorization sent)
+jarvis-openai        3 tests
 ─────────────────
-TOTAL              241 tests
+TOTAL              250 tests
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,
