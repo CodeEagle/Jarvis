@@ -12,10 +12,12 @@
 //! mocks so the runtime is fully testable without real I/O. Real tool
 //! adapters land in v0.2 / v0.3.
 
+pub mod plugin;
 pub mod registry;
 pub mod result;
 pub mod runtime;
 
+pub use plugin::{LoadedPlugin, Plugin, PluginError, PluginRegistry};
 pub use registry::{Tool, ToolBox, ToolRegistry};
 pub use result::{ToolResult, ToolStatus};
 pub use runtime::{CallContext, ToolRuntime};

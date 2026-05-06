@@ -237,3 +237,69 @@ async fn denied_call_records_denied_audit_status() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].status, jarvis_db::audit_log::AuditStatus::Denied);
 }
+
+// ── plugin registry (Section 24.5) ─────────────────────────────────────
+
+#[cfg(test)]
+struct EchoPlugin {
+    id: &'static str,
+    label: &'static str,
+}
+
+#[async_trait::async_trait]
+impl plugin::Plugin for EchoPlugin {
+    fn id(&self) -> &str { self.id }
+    fn label(&self) -> &str { self.label }
+    async fn build_tools(&self) -> Result<Vec<registry::ToolBox>, plugin::PluginError> {
+        let mut reg = registry::ToolRegistry::new();
+        reg.register_fn("echo.tool", |args| async move {
+            result::ToolResult::ok("echo.tool", "echoed", args)
+        });
+        Ok(reg.names()
+            .into_iter()
+            .filter_map(|n| reg.get(&n).cloned())
+            .collect())
+    }
+}
+
+#[tokio::test]
+async fn plugin_install_registers_its_tools() {
+    let pr = plugin::PluginRegistry::new();
+    let mut tools = registry::ToolRegistry::new();
+    let loaded = pr
+        .install(std::sync::Arc::new(EchoPlugin { id: "echo", label: "Echo" }), &mut tools)
+        .await
+        .unwrap();
+    assert_eq!(loaded.id, "echo");
+    assert!(loaded.tool_names.contains(&"echo.tool".to_string()));
+    assert!(tools.get("echo.tool").is_some());
+    assert_eq!(pr.provenance_of("echo.tool").as_deref(), Some("echo"));
+}
+
+#[tokio::test]
+async fn plugin_install_rejects_duplicate_id() {
+    let pr = plugin::PluginRegistry::new();
+    let mut tools = registry::ToolRegistry::new();
+    pr.install(std::sync::Arc::new(EchoPlugin { id: "echo", label: "" }), &mut tools)
+        .await
+        .unwrap();
+    let err = pr
+        .install(std::sync::Arc::new(EchoPlugin { id: "echo", label: "" }), &mut tools)
+        .await
+        .unwrap_err();
+    matches!(err, plugin::PluginError::AlreadyRegistered(_))
+        .then_some(())
+        .expect("expected AlreadyRegistered");
+}
+
+#[tokio::test]
+async fn plugin_unregister_removes_provenance() {
+    let pr = plugin::PluginRegistry::new();
+    let mut tools = registry::ToolRegistry::new();
+    pr.install(std::sync::Arc::new(EchoPlugin { id: "echo", label: "" }), &mut tools)
+        .await
+        .unwrap();
+    let removed = pr.unregister("echo").unwrap();
+    assert!(removed.contains(&"echo.tool".to_string()));
+    assert!(pr.provenance_of("echo.tool").is_none());
+}

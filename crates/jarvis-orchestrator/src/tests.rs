@@ -596,6 +596,31 @@ fn walkthrough_too_many_files_blocks_auto_approve() {
 }
 
 #[test]
+fn walkthrough_manual_approve_records_actor_and_timestamp() {
+    let db = Db::in_memory().unwrap();
+    let store = walkthrough::WalkthroughStore::new(db);
+    let doc = walkthrough::new_draft("st_app", "sess_app", "coding", "x");
+    store.save(&doc).unwrap();
+    let approved = store.approve(&doc.id, "user").unwrap();
+    assert_eq!(approved.approval_status, walkthrough::ApprovalStatus::Approved);
+    assert_eq!(approved.approved_by.as_deref(), Some("user"));
+    assert!(approved.approved_at.is_some());
+}
+
+#[test]
+fn walkthrough_manual_reject_records_reason_in_notes() {
+    let db = Db::in_memory().unwrap();
+    let store = walkthrough::WalkthroughStore::new(db);
+    let doc = walkthrough::new_draft("st_rej", "sess_rej", "coding", "x");
+    store.save(&doc).unwrap();
+    let rejected = store
+        .reject(&doc.id, "user", Some("design unclear"))
+        .unwrap();
+    assert_eq!(rejected.approval_status, walkthrough::ApprovalStatus::Rejected);
+    assert!(rejected.verification_notes.unwrap().contains("design unclear"));
+}
+
+#[test]
 fn walkthrough_store_round_trip_and_auto_review() {
     let db = Db::in_memory().unwrap();
     let store = walkthrough::WalkthroughStore::new(db);

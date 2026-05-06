@@ -313,6 +313,36 @@ impl WalkthroughStore {
         Ok(decision)
     }
 
+    /// Manually approve a walkthrough — used by callers that drove
+    /// the human review loop themselves.
+    pub fn approve(&self, id: &str, by: &str) -> DbResult<WalkthroughDoc> {
+        let mut doc = self
+            .get(id)?
+            .ok_or_else(|| jarvis_db::error::DbError::NotFound(format!("walkthrough {id}")))?;
+        doc.approval_status = ApprovalStatus::Approved;
+        doc.approved_by = Some(by.to_string());
+        doc.approved_at = Some(now());
+        self.save(&doc)?;
+        Ok(doc)
+    }
+
+    pub fn reject(&self, id: &str, by: &str, reason: Option<&str>) -> DbResult<WalkthroughDoc> {
+        let mut doc = self
+            .get(id)?
+            .ok_or_else(|| jarvis_db::error::DbError::NotFound(format!("walkthrough {id}")))?;
+        doc.approval_status = ApprovalStatus::Rejected;
+        doc.approved_by = Some(by.to_string());
+        doc.approved_at = Some(now());
+        if let Some(r) = reason {
+            doc.verification_notes = Some(match doc.verification_notes {
+                Some(prev) => format!("{prev}\nrejected: {r}"),
+                None => format!("rejected: {r}"),
+            });
+        }
+        self.save(&doc)?;
+        Ok(doc)
+    }
+
     pub fn list_for_session(&self, session_id: &str) -> DbResult<Vec<WalkthroughDoc>> {
         self.db.with(|conn| {
             let sql = format!(

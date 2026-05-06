@@ -69,3 +69,9 @@ pub fn walkthrough(db: &Db, session: &str) -> Result<Response<Full<Bytes>>, ApiE
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(json_ok(&docs))
 }
+
+pub fn session_messages(db: &Db, session: &str) -> Result<Response<Full<Bytes>>, ApiError> {
+    let messages = jarvis_db::session_repo::recent_messages(db, session, 200)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&messages))
+}

@@ -82,6 +82,35 @@ async fn handle(
         (Method::POST, "/steer") => post_steer(&state, req).await,
         (Method::POST, "/interrupt") => post_interrupt(&state, req).await,
         (Method::POST, "/maintenance/lint") => post_maintenance_lint(&state, req).await,
+        (Method::POST, p)
+            if p.starts_with("/walkthrough/") && p.ends_with("/approve") =>
+        {
+            let id = p
+                .strip_prefix("/walkthrough/")
+                .and_then(|s| s.strip_suffix("/approve"))
+                .unwrap_or("")
+                .to_string();
+            post_walkthrough_decision(&state, req, id, true).await
+        }
+        (Method::POST, p)
+            if p.starts_with("/walkthrough/") && p.ends_with("/reject") =>
+        {
+            let id = p
+                .strip_prefix("/walkthrough/")
+                .and_then(|s| s.strip_suffix("/reject"))
+                .unwrap_or("")
+                .to_string();
+            post_walkthrough_decision(&state, req, id, false).await
+        }
+        (Method::GET, p)
+            if p.starts_with("/sessions/") && p.ends_with("/messages") =>
+        {
+            let id = p
+                .strip_prefix("/sessions/")
+                .and_then(|s| s.strip_suffix("/messages"))
+                .unwrap_or("");
+            handlers::session_messages(&state.db, id)
+        }
         (Method::GET, p) if p.starts_with("/sessions/") => {
             handlers::get_session(&state.db, &p["/sessions/".len()..])
         }
@@ -318,6 +347,43 @@ async fn post_maintenance_lint(
         "weak_lessons_demoted": report.weak_lessons_demoted,
         "conflicts_dampened": report.conflicts_dampened,
     })))
+}
+
+#[derive(Debug, Deserialize)]
+struct WalkthroughDecisionBody {
+    #[serde(default = "default_actor")]
+    by: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+fn default_actor() -> String {
+    "user".into()
+}
+
+async fn post_walkthrough_decision(
+    state: &Arc<ApiState>,
+    req: Request<Incoming>,
+    id: String,
+    approve: bool,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let body = read_json::<WalkthroughDecisionBody>(req)
+        .await
+        .unwrap_or(WalkthroughDecisionBody {
+            by: "user".into(),
+            reason: None,
+        });
+    let store = jarvis_orchestrator::walkthrough::WalkthroughStore::new(state.db.clone());
+    let doc = if approve {
+        store.approve(&id, &body.by)
+    } else {
+        store.reject(&id, &body.by, body.reason.as_deref())
+    }
+    .map_err(|e| match e {
+        jarvis_db::error::DbError::NotFound(s) => ApiError::NotFound(s),
+        other => ApiError::Internal(other.to_string()),
+    })?;
+    Ok(json_ok(&doc))
 }
 
 async fn read_json<T: for<'de> Deserialize<'de>>(req: Request<Incoming>) -> Result<T, ApiError> {

@@ -92,6 +92,54 @@ async fn list_memories_returns_empty_for_unused_scope() {
 }
 
 #[tokio::test]
+async fn session_messages_returns_chronological() {
+    let state = fresh_state();
+    let n = jarvis_core::time::now();
+    jarvis_db::session_repo::upsert_session(
+        &state.db,
+        &jarvis_core::session::Session {
+            id: "sess_api2".into(),
+            title: "msgs".into(),
+            domain: "coding".into(),
+            topic: "x".into(),
+            summary: "".into(),
+            long_summary: "".into(),
+            active_entities: vec![],
+            unresolved: vec![],
+            resolved: vec![],
+            recent_message_ids: vec![],
+            memory_refs: vec![],
+            skill_refs: vec![],
+            status: jarvis_core::session::SessionStatus::Active,
+            created_at: n,
+            updated_at: n,
+            last_active_at: n,
+        },
+    )
+    .unwrap();
+    for i in 0..3 {
+        jarvis_db::session_repo::append_message(
+            &state.db,
+            &jarvis_core::session::Message {
+                id: format!("m{i}"),
+                session_id: "sess_api2".into(),
+                trace_id: None,
+                role: jarvis_core::session::MessageRole::User,
+                content: format!("hi {i}"),
+                token_count: 1,
+                summary_id: None,
+                created_at: n,
+            },
+        )
+        .unwrap();
+    }
+    let resp = handlers::session_messages(&state.db, "sess_api2").unwrap();
+    let body = body_bytes(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
 async fn audit_returns_array() {
     let state = fresh_state();
     jarvis_db::audit_log::append(
