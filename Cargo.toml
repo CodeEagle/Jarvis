@@ -5,6 +5,9 @@ members = [
     "crates/jarvis-db",
     "crates/jarvis-router",
     "crates/jarvis-memory",
+    "crates/jarvis-tools",
+    "crates/jarvis-growth",
+    "crates/jarvis-orchestrator",
     "crates/jarvis-control",
     "crates/jarvis-cli",
 ]
@@ -32,11 +35,14 @@ sha2 = "0.10"
 hex = "0.4"
 async-trait = "0.1"
 
-jarvis-core   = { path = "crates/jarvis-core" }
-jarvis-db     = { path = "crates/jarvis-db" }
-jarvis-router = { path = "crates/jarvis-router" }
-jarvis-memory = { path = "crates/jarvis-memory" }
-jarvis-control = { path = "crates/jarvis-control" }
+jarvis-core         = { path = "crates/jarvis-core" }
+jarvis-db           = { path = "crates/jarvis-db" }
+jarvis-router       = { path = "crates/jarvis-router" }
+jarvis-memory       = { path = "crates/jarvis-memory" }
+jarvis-tools        = { path = "crates/jarvis-tools" }
+jarvis-growth       = { path = "crates/jarvis-growth" }
+jarvis-orchestrator = { path = "crates/jarvis-orchestrator" }
+jarvis-control      = { path = "crates/jarvis-control" }
 
 [profile.release]
 lto = "thin"

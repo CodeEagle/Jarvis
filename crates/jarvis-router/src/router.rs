@@ -8,6 +8,7 @@ use jarvis_core::route::{RouteDecision, SessionAction};
 use jarvis_core::time::now;
 use jarvis_core::tool::ToolScope;
 use jarvis_db::{raw_event_log, Db};
+use jarvis_growth::{Collector, SourceModule};
 
 use crate::agent_registry::{builtin_agents, match_agent};
 use crate::intent::{apply_rules, dominant_hint};
@@ -39,22 +40,30 @@ pub struct RouterDiagnostics {
 pub struct Router {
     db: Db,
     registry: Vec<AgentDefinition>,
+    growth: Collector,
 }
 
 impl Router {
     pub fn new(db: Db) -> Self {
+        let growth = Collector::new(db.clone());
         Self {
             db,
             registry: builtin_agents(),
+            growth,
         }
     }
 
     pub fn with_registry(db: Db, registry: Vec<AgentDefinition>) -> Self {
-        Self { db, registry }
+        let growth = Collector::new(db.clone());
+        Self { db, registry, growth }
     }
 
     pub fn registry(&self) -> &[AgentDefinition] {
         &self.registry
+    }
+
+    pub fn growth(&self) -> &Collector {
+        &self.growth
     }
 
     /// Route a user input.
@@ -243,6 +252,24 @@ impl Router {
             steer_content,
             fallback_used: false,
         };
+
+        // Emit a route_decision event for the Growth Engine. We swallow
+        // failures here because the PRD is explicit (Section 5.5):
+        // Growth Engine outages must not break routing.
+        let event_payload = serde_json::json!({
+            "agent_type": decision.agent_type,
+            "primary_intent": decision.primary_intent,
+            "confidence": decision.confidence,
+            "session_action": decision.session_action.as_str(),
+            "mention_override": decision.mention_override,
+            "fallback_used": decision.fallback_used,
+        });
+        let _ = self.growth.emit(
+            SourceModule::Router,
+            "route_decision",
+            Some(&trace_id),
+            event_payload,
+        );
 
         Ok((
             decision,

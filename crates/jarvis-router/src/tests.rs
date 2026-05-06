@@ -331,6 +331,21 @@ fn confidence_never_reaches_one() {
 }
 
 #[test]
+fn route_emits_growth_event() {
+    let db = fresh_db();
+    let r = Router::new(db.clone());
+    r.route(RouterInput {
+        user_input: "OpenWrt DNS 报错",
+        session_id_hint: None,
+        running_agent_types: &[],
+    })
+    .unwrap();
+    let collector = jarvis_growth::Collector::new(db);
+    let n = collector.count_of("route_decision").unwrap();
+    assert!(n >= 1, "expected ≥1 route_decision growth event, got {n}");
+}
+
+#[test]
 fn mention_log_records_unresolved_mentions() {
     let db = fresh_db();
     let r = Router::new(db.clone());

@@ -15,6 +15,7 @@ use std::io::{self, BufRead, Write};
 use jarvis_control::ControlPlane;
 use jarvis_core::memory::{EmotionPolarity, MemoryType, SourceType};
 use jarvis_db::Db;
+use jarvis_growth::{ArtifactStatus, ArtifactType, Collector};
 use jarvis_memory::{
     manager::{MemoryManager, WriteRequest},
     Retrieval,
@@ -60,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
         Some("chat") => chat_repl(db).await?,
         Some("memory") => memory_command(db, &args[2..])?,
         Some("raw-log") => raw_log_command(db, &args[2..])?,
+        Some("growth") => growth_command(db, &args[2..])?,
         _ => {
             print_usage();
         }
@@ -186,8 +188,59 @@ fn raw_log_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn growth_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+    let collector = Collector::new(db);
+    match args.first().map(String::as_str) {
+        Some("events") => {
+            let event_type = args.get(1).cloned().unwrap_or_else(|| "route_decision".into());
+            let rows = collector.list_events_for_event_type(&event_type, 50)?;
+            for row in rows {
+                println!(
+                    "[{}] {} {} {}",
+                    row.ts.to_rfc3339(),
+                    row.source_module.as_str(),
+                    row.event_type,
+                    row.payload_json
+                );
+            }
+        }
+        Some("artifacts") => {
+            let arts = collector.list_artifacts(None, None)?;
+            for a in arts {
+                println!(
+                    "{}  type={}  status={}  v{}  conf={:.2}",
+                    a.id,
+                    a.r#type.as_str(),
+                    a.status.as_str(),
+                    a.version,
+                    a.confidence
+                );
+            }
+        }
+        Some("filter") => {
+            let by_type = args.get(1).and_then(|s| ArtifactType::parse(s));
+            let by_status = args.get(2).and_then(|s| match s.as_str() {
+                "promoted" => Some(ArtifactStatus::Promoted),
+                "candidate" => Some(ArtifactStatus::Candidate),
+                "rejected" => Some(ArtifactStatus::Rejected),
+                _ => None,
+            });
+            let arts = collector.list_artifacts(by_type, by_status)?;
+            for a in arts {
+                println!("{} {}", a.r#type.as_str(), a.id);
+            }
+        }
+        _ => {
+            println!(
+                "Usage: growth events [event_type] | growth artifacts | growth filter <type> [status]"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn print_usage() {
-    println!("Jarvis v0.1 CLI
+    println!("Jarvis v0.2 CLI
 
 Commands:
   jarvis route <input>          run Router and print decision
@@ -195,6 +248,8 @@ Commands:
   jarvis memory write <text>    record a user-explicit memory
   jarvis memory list            list memories
   jarvis raw-log <session_id>   dump raw_event_log
+  jarvis growth events [type]   list growth events
+  jarvis growth artifacts       list growth artifacts
 
 Env:
   JARVIS_DB                     path to sqlite file (default: ./jarvis.db)

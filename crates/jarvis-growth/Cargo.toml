@@ -1,18 +1,15 @@
 [package]
-name = "jarvis-router"
+name = "jarvis-growth"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 jarvis-core.workspace = true
 jarvis-db.workspace = true
-jarvis-memory.workspace = true
-jarvis-growth.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
-regex.workspace = true
-once_cell.workspace = true
+rusqlite.workspace = true
 tracing.workspace = true

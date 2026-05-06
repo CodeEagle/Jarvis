@@ -1,13 +1,28 @@
 # Jarvis — Global AI Runtime (Rust)
 
 Rust implementation of the **Jarvis Global AI Runtime** PRD (v1.8 spec).
-This repo currently ships the **v0.1 MVP foundation**: rule-layer Router,
-SessionResolver, immutable raw event log, Memory + change-log, Control
-Plane response SLA + sub-agent watchdog, plus a CLI to drive it all.
 
-The PRD describes a much larger system (Orchestrator, Walkthrough/
-Verifier, Dream, Steer, Tentacle files, Growth Engine, Codex driver, …).
-Those land in v0.2 / v0.3 / v0.4 / v1.0 — see [Roadmap](#roadmap) below.
+This repo currently ships **v0.1 + most of v0.2**:
+
+- v0.1 (shipped): rule-layer Router, SessionResolver, immutable raw
+  event log, Memory + change-log, Control Plane response SLA + Watchdog,
+  CLI.
+- v0.2 (this commit, partial): Tool Runtime with permission model,
+  Growth Engine (Collector + PromotionGate + Regression-aware skill
+  promotion), Compression (TurnSummary + Rolling Summary versioning +
+  dynamic threshold policy), Orchestrator subsystem (TaskTree +
+  ArtifactRegistry + SubTaskEnvelope), ConversationBus with ownership
+  state machine + sub-channels + user-message router, SubTaskCheckpoint
+  for soft-interrupt resume, Steer protocol with throttle + audit,
+  Tentacle file generator (`CONTEXT.md` write-protected, `todo.md`
+  checkboxes, `NOTES.md` append, `HANDOFF.md` one-shot, file locks).
+
+Still TODO before tagging v0.2 final: real LLM judge layer, sub-agent
+dispatch with Codex driver, ActivityCard rendering, Worktree management.
+
+The PRD describes more (Walkthrough/Verifier, Dream system, Persona
+layer, full @mention REPL polish). Those land in v0.3/v0.4/v1.0 — see
+[Roadmap](#roadmap).
 
 ---
 
@@ -15,40 +30,59 @@ Those land in v0.2 / v0.3 / v0.4 / v1.0 — see [Roadmap](#roadmap) below.
 
 ```
 crates/
-  jarvis-core/      Pure domain types (RouteDecision, Memory, Session …)
-  jarvis-db/        SQLite storage; immutable triggers; raw_event_log;
-                    memory_change_log; session_repo; memory_repo
-  jarvis-router/    Main Router: rule-layer IntentClassifier, @mention
-                    parser, SessionResolver scoring, agent registry
-  jarvis-memory/    MemoryManager (write rules + change-log atomicity),
-                    Jaccard-based retrieval + emotion resonance, trust score
-  jarvis-control/   Control Plane / Task Plane separation, response SLA,
-                    sub-agent Watchdog, fallback responder
-  jarvis-cli/       `jarvis` binary — route / chat / memory / raw-log
+  jarvis-core/          Pure domain types
+                        (RouteDecision, Memory, Session, AgentDefinition,
+                         ToolScope, MentionMode, TaskNode, …)
+  jarvis-db/            SQLite storage; immutable triggers; raw_event_log;
+                        memory_change_log; session/memory/mention repos;
+                        full v0.2 schema (task_trees, artifacts,
+                        conversation_ownerships, sub_channels,
+                        sub_task_checkpoints, steer_signals,
+                        turn_summaries, rolling_summary_versions,
+                        growth_events, growth_artifacts, …)
+  jarvis-router/        Main Router: rule-layer IntentClassifier, @mention
+                        parser, SessionResolver scoring, agent registry,
+                        Growth Engine wiring
+  jarvis-memory/        MemoryManager (write rules + change-log atomicity),
+                        Jaccard retrieval + emotion resonance, trust score,
+                        compression (TurnSummary, RollingSummary versions,
+                        three-dim dynamic policy)
+  jarvis-tools/         Tool Runtime: scope validation, confirmation gate,
+                        timeout, raw_event_log audit on every call
+  jarvis-growth/        GrowthEvent / GrowthArtifact / Collector /
+                        PromotionGate (Section 16.6 rules)
+  jarvis-orchestrator/  TaskTree + ArtifactRegistry + SubTaskEnvelope +
+                        ConversationBus + ownership state machine +
+                        SubTaskCheckpoint + Steer protocol +
+                        Tentacle file generator with locks
+  jarvis-control/       Control Plane / Task Plane separation, response SLA,
+                        sub-agent Watchdog, fallback responder
+  jarvis-cli/           `jarvis` binary — route / chat / memory / raw-log /
+                        growth events / growth artifacts
 ```
 
-Each crate has its own unit-test module. **71 tests pass** across the
-workspace as of the current commit.
+**121 unit tests pass** across the workspace.
 
 ---
 
 ## Quickstart
 
 ```bash
-# build
 cargo build --release
-
-# unit tests (everything)
 cargo test --workspace
 
 # route a single input through the rule layer
 JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效"
 
-# interactive REPL through the Control Plane (with response SLA)
+# interactive REPL through the Control Plane
 ./target/release/jarvis chat
 
 # record a long-term preference
 ./target/release/jarvis memory write "用户偏好函数式风格"
+
+# inspect Growth Engine
+./target/release/jarvis growth events route_decision
+./target/release/jarvis growth artifacts
 
 # inspect immutable raw event log for a session
 ./target/release/jarvis raw-log sess_xxxx
@@ -56,164 +90,98 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 
 ---
 
-## What v0.1 actually does
+## What's wired up
 
-The PRD's non-negotiable v0.1 invariants (Section 24.1) are all live:
+### v0.1 (Section 24.1)
 
 | Invariant | Where |
 |---|---|
-| Raw input written to `raw_event_log` *before* any classification | `jarvis-router/src/router.rs::Router::route` Step 0 |
-| `raw_event_log` blocks `UPDATE` / `DELETE` via SQL triggers | `jarvis-db/src/migrations.rs`, tested in `jarvis-db/src/tests.rs` |
-| Each row carries a `sha256(ts \| event_type \| raw_content)` checksum | `jarvis-db/src/raw_event_log.rs::compute_checksum` |
-| Memory writes are atomic with `memory_change_log` | `jarvis-db/src/memory_repo.rs::upsert` (single transaction) |
-| Control Plane response SLA — fallback ≤ 2000ms | `jarvis-control/src/control_plane.rs::handle_user_input` |
-| Sub-agent Watchdog with stale → grace → dead state machine | `jarvis-control/src/watchdog.rs` |
-| Control Plane / Task Plane separation (Task Plane = `spawn_blocking`) | `jarvis-control/src/control_plane.rs` |
-| `@mention` parsing with `mentionable=false` for internal agents | `jarvis-router/src/mention.rs`, `jarvis-router/src/agent_registry.rs` |
-| Emotion-coordinate gate — fact/preference forced neutral | `jarvis-core/src/memory.rs::Memory::enforce_emotion_gate` |
-| Tier-1 trust-score floor ≥ 0.30, retrieve-boost cap ≤ 0.20 | `jarvis-memory/src/trust.rs::compute` |
+| Raw input → `raw_event_log` *before* any classification | `jarvis-router/src/router.rs::Router::route` Step 0 |
+| `raw_event_log` blocks UPDATE/DELETE via SQL triggers | `jarvis-db/src/migrations.rs` |
+| sha256 checksum on every raw event | `jarvis-db/src/raw_event_log.rs::compute_checksum` |
+| Memory writes atomic with `memory_change_log` | `jarvis-db/src/memory_repo.rs::upsert` |
+| Control Plane response SLA fallback ≤ 2000ms | `jarvis-control/src/control_plane.rs` |
+| Sub-agent Watchdog state machine | `jarvis-control/src/watchdog.rs` |
+| Control / Task plane separation | `jarvis-control/src/control_plane.rs` |
+| `@mention` parsing + `mentionable=false` for internal agents | `jarvis-router/src/{mention,agent_registry}.rs` |
+| Emotion-coordinate gate forces neutral on non-emotion types | `jarvis-core/src/memory.rs::Memory::enforce_emotion_gate` |
+| Tier-1 trust floor ≥ 0.30, retrieve-boost cap ≤ 0.20 | `jarvis-memory/src/trust.rs::compute` |
 
-### Router decision flow
+### v0.2
 
-```
-user input
-  ↓
-[Step 0]  raw_event_log::append           — survives any downstream panic
-  ↓
-[Step 0a] @mention parse + mention_log    — single / multi / steer / unresolved
-  ↓
-[Step 1]  rule layer apply_rules          — keyword → IntentHint(weight)
-  ↓
-[Step 2]  SessionResolver                 — explicit_reference > scored top
-  ↓
-[Step 3]  agent selection                 — @mention overrides intent match
-  ↓
-RouteDecision (+ RouterDiagnostics)
-```
-
-The LLM judgment layer described in PRD §5.4 is intentionally **left as
-a seam** — `Router::route` consumes only rule hints today. When v0.2
-plugs in an LLM, the rule layer's `IntentHint` list becomes the prompt
-input and `RouteDecision` stays the same, so callers don't change.
+| Invariant | Where |
+|---|---|
+| Tool calls scope-checked, confirmation-gated, timeout-bounded | `jarvis-tools/src/runtime.rs::ToolRuntime::call` |
+| Every tool call audited to `raw_event_log` (call + result) | same — `audit_result` |
+| Router emits `route_decision` GrowthEvent (Section 5.5 tolerant) | `jarvis-router/src/router.rs` end of `route()` |
+| Skill promotion blocked without ≥3 successes / <20% failure / regression ≥80% | `jarvis-growth/src/promotion.rs::PromotionGate::eval_skill` |
+| Compression threshold tracks task complexity + usage budget | `jarvis-memory/src/compression.rs::compression_threshold` |
+| Rolling Summary writes are versioned and update `sessions.long_summary` in one tx | `jarvis-memory/src/compression.rs::CompressionStore::append_rolling_version` |
+| TaskTreeView is recomputed on demand (recent completed + active) | `jarvis-orchestrator/src/task_tree.rs::TaskTreeStore::build_view` |
+| Ownership acquire releases prior holder atomically | `jarvis-orchestrator/src/conversation_bus.rs::acquire_ownership` |
+| User message classifier — interrupt > steer > progress > normal | `…::classify_user_message` |
+| Steer signals throttled at 3/60s, audited to `raw_event_log` | `jarvis-orchestrator/src/steer.rs::SteerController::enqueue` |
+| Tentacle CONTEXT.md is write-protected for sub-agents | `jarvis-orchestrator/src/tentacle.rs::Tentacle::try_overwrite_context` |
+| Tentacle HANDOFF.md is one-shot (no overwrite) | `…::Tentacle::write_handoff_once` |
+| File-level locks on todo/notes/handoff with 30s upper bound | `…::tentacle::lock` |
 
 ---
 
 ## Test inventory
 
 ```
-jarvis-core      13 tests   ID prefixes, domain parsing, emotion gate,
-                            trust-score signatures, ToolScope semantics
-jarvis-db        11 tests   raw_event_log immutability (UPDATE/DELETE),
-                            checksum verification, atomic memory write,
-                            change-log before/after snapshots, session repo
-jarvis-memory    11 tests   write rules per source_type, trust decay,
-                            high-emotion slow decay, Tier-1 floor,
-                            retrieve-boost cap, hybrid retrieval, emotion
-                            resonance (negative→positive bonus, low-energy
-                            no-trigger, ≤0.15 cap)
-jarvis-router    27 tests   intent rules (incl. creative.icon vs design),
-                            session score weights/thresholds, recency
-                            decay, @mention single/multi/alias/unresolved/
-                            internal-not-mentionable, full Router pipeline
-                            including raw_event_log ordering, mention
-                            override, multi → orchestrator, steer detection,
-                            explicit_reference continues old session,
-                            confidence < 1.0
-jarvis-control    9 tests   Watchdog healthy/stale/dead/recovery,
-                            fallback message variants, ControlPlane
-                            resolved + budget-tight fallback
+jarvis-core         13 tests
+jarvis-db           11 tests
+jarvis-memory       20 tests   (incl. 8 compression + emotion-resonance)
+jarvis-tools         8 tests
+jarvis-growth       10 tests
+jarvis-orchestrator 22 tests
+jarvis-router       28 tests
+jarvis-control       9 tests
 ─────────────────
-TOTAL            71 tests
+TOTAL              121 tests
 ```
 
-Run any individually:
-
-```bash
-cargo test -p jarvis-router route_writes_raw_event_log_first
-cargo test -p jarvis-db   raw_event_log_blocks_update
-```
-
----
-
-## Storage
-
-SQLite (bundled). `WAL` journal + `recursive_triggers = ON` so the
-immutability triggers fire from any cascade.
-
-The schema is in `jarvis-db/src/migrations.rs` and applied lazily on
-`Db::open` / `Db::in_memory`. Tables:
-
-- **Mutable**: `sessions`, `messages`, `memories`, `routing_examples`,
-  `mention_log`
-- **Immutable (triggers)**: `raw_event_log`, `memory_change_log`,
-  `session_snapshots`
-
-For tests we use `Db::in_memory()` which still installs all triggers.
+Each crate is independently testable: `cargo test -p jarvis-orchestrator`,
+etc.
 
 ---
 
 ## Roadmap
 
-The PRD's 5-phase roadmap (Section 24) maps onto crates as follows. v0.1
-is **done**; later phases are tracked but **not implemented**.
-
-### v0.1 — shipped (this commit)
+### v0.1 ✅ shipped
 - Router rule layer, SessionResolver, raw_event_log, Memory + change-log,
   Control Plane / Task Plane split, Watchdog, CLI
 
-### v0.2 — Growth Engine + Orchestrator basics
-- New crate `jarvis-growth`: Collector, Evaluator, Extractor,
-  PromotionGate, Regression Runner (mock-tool replay)
-- Orchestrator path inside `jarvis-router`: TaskTree + ArtifactRegistry,
-  ConversationBus with ownership state machine, Tentacle file generator
-- Dynamic compression policy (three-dim threshold)
-- Tentacle file Lock (Section 20.4)
+### v0.2 (this commit, mostly done)
+- ✅ Tool Runtime with permission validation
+- ✅ Growth Engine (Collector + PromotionGate + ArtifactStore)
+- ✅ Compression (TurnSummary + Rolling Summary + dynamic policy)
+- ✅ TaskTree + ArtifactRegistry
+- ✅ ConversationBus with ownership state machine + sub-channels
+- ✅ SubTaskCheckpoint for soft-interrupt resume
+- ✅ Steer protocol with throttle + audit
+- ✅ Tentacle file generator (CONTEXT.md write-protected; HANDOFF.md one-shot)
+- ⬜ LLM judgment layer (currently rule-only)
+- ⬜ Sub-agent dispatch with worker-process driver
+- ⬜ Worktree manager + workspace lock
+- ⬜ ActivityCard rendering for collaboration panel
 
-### v0.3 — Walkthrough + Verifier + Steer
-- New crate `jarvis-orchestrator`: WalkthroughAgent, VerifierAgent,
-  RegressionOrchestrator, CompareAgent
-- New crate `jarvis-tools`: tool runtime with permission & confirmation
-- Steer protocol: `SteerSignal`, `steer_queue`, Codex steer adapter
-- Soft / hard / async interrupt protocol with `SubTaskCheckpoint`
+### v0.3
+- WalkthroughAgent / VerifierAgent
+- RegressionOrchestrator
+- Codex steer adapter
+- soft / hard / async interrupt with Watchdog escalation
 
-### v0.4 — Memory deepening + cost optimization
-- Dream system (lint + cluster + inference) inside `jarvis-memory`
-- Emotion coordinates + emotion resonance retrieval (already wired in
-  `Retrieval::retrieve`; the Dream system populates the values)
-- Dynamic model up/downgrade (haiku ↔ sonnet ↔ opus) with debouncing
+### v0.4
+- Dream system (lint + cluster + inference)
+- Dynamic model up/downgrade with debouncing
 - token-budget self-learning (`preferred_context_budget`)
-- Persona layer (`persona.md` + `user.md` injected into stable layer)
+- Persona layer
 
-### v1.0 — Productization
-- Growth Dashboard, multi-device sync, Qdrant / pgvector upgrade,
-  MCP / plugin registry, Trace Viewer, sandboxed tool runtime.
-
----
-
-## Design choices that aren't obvious from the PRD
-
-1. **`rusqlite` not leaked through `Router`.** The router talks to
-   storage only via repo functions (`raw_event_log::append`,
-   `mention_log::append`, …) so swapping SQLite for Postgres later
-   doesn't touch routing logic.
-2. **Hybrid score is one path today.** PRD §13.1 specifies
-   FTS5 + vector + Jaccard; v0.1 ships only Jaccard. The function
-   shape `(jaccard * w) * (0.7 + trust * 0.3) + emotion_bonus` is
-   already the planned final form, with extra retrievers folded into
-   the parenthesised expression — no API churn when they arrive.
-3. **`Db` is `Arc<Mutex<Connection>>`.** `rusqlite` isn't `Sync` and
-   Jarvis is single-machine; the mutex isn't a real bottleneck given
-   SQLite's own write serialization. If/when we move to a connection
-   pool, `Db` is the only thing that has to change.
-4. **Control Plane = `tokio::time::timeout` + `spawn_blocking`.** The
-   PRD demands separation so a stuck Task Plane can never block user
-   responses. With sync rusqlite + a fallback budget, this is the
-   simplest correct shape; we can promote the Task Plane to a real
-   subprocess later without changing the call site.
-5. **Internal agents (Jarvis / Verifier / Walkthrough / Memory) are
-   `mentionable: false`.** PRD §5.3a §8.12.2. Keeping this in the
-   `AgentDefinition` rather than as a separate list makes the registry
-   the single source of truth for both routing and `@mention` resolution.
+### v1.0
+- Growth Dashboard, multi-device sync, Qdrant / pgvector,
+  MCP / plugin registry, Trace Viewer, sandboxed tool runtime
 
 ---
 

@@ -202,6 +202,207 @@ CREATE INDEX IF NOT EXISTS idx_mention_log_session
     ON mention_log (session_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mention_unresolved
     ON mention_log (unresolved, raw_text);
+
+-- ─── growth events / artifacts (Section 21.7 / 21.8) ───────────────────
+
+CREATE TABLE IF NOT EXISTS growth_events (
+    id            TEXT PRIMARY KEY,
+    ts            TEXT NOT NULL,
+    trace_id      TEXT,
+    source_module TEXT NOT NULL,
+    event_type    TEXT NOT NULL,
+    payload_json  TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_growth_events_type
+    ON growth_events (event_type, ts DESC);
+
+CREATE TABLE IF NOT EXISTS growth_artifacts (
+    id                  TEXT PRIMARY KEY,
+    type                TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'candidate',
+    version             INTEGER NOT NULL DEFAULT 1,
+    scope               TEXT,
+    confidence          REAL NOT NULL DEFAULT 0.0,
+    evidence_trace_ids  TEXT NOT NULL DEFAULT '[]',
+    payload_json        TEXT NOT NULL DEFAULT '{}',
+    created_at          TEXT NOT NULL,
+    promoted_at         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_growth_artifacts_status
+    ON growth_artifacts (status, type);
+
+-- ─── compression: turn / rolling summaries (Section 21.10 / 21.11) ─────
+
+CREATE TABLE IF NOT EXISTS turn_summaries (
+    id                  TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL,
+    trace_id            TEXT,
+    task_id             TEXT,
+    user_goal           TEXT NOT NULL DEFAULT '',
+    actions_taken_json  TEXT NOT NULL DEFAULT '[]',
+    result              TEXT NOT NULL DEFAULT '',
+    entities_json       TEXT NOT NULL DEFAULT '[]',
+    unresolved_json     TEXT NOT NULL DEFAULT '[]',
+    source_message_ids_json TEXT NOT NULL DEFAULT '[]',
+    token_count         INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_turn_summaries_session
+    ON turn_summaries (session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS rolling_summary_versions (
+    id                       TEXT PRIMARY KEY,
+    session_id               TEXT NOT NULL,
+    version                  INTEGER NOT NULL,
+    content                  TEXT NOT NULL,
+    token_count              INTEGER NOT NULL DEFAULT 0,
+    trigger_reason           TEXT NOT NULL,
+    source_turn_summary_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at               TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rolling_versions_session
+    ON rolling_summary_versions (session_id, version);
+
+-- ─── orchestrator: task_trees / task_nodes / artifacts (Section 21.13-15)
+
+CREATE TABLE IF NOT EXISTS task_trees (
+    id           TEXT PRIMARY KEY,
+    root_task_id TEXT NOT NULL,
+    session_id   TEXT NOT NULL,
+    trace_id     TEXT,
+    status       TEXT NOT NULL DEFAULT 'running',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_trees_session
+    ON task_trees (session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS task_nodes (
+    id                       TEXT PRIMARY KEY,
+    tree_id                  TEXT NOT NULL,
+    parent_id                TEXT,
+    task_id                  TEXT NOT NULL,
+    title                    TEXT NOT NULL,
+    intent                   TEXT NOT NULL,
+    status                   TEXT NOT NULL DEFAULT 'pending',
+    assigned_agent_type      TEXT NOT NULL,
+    assigned_agent_id        TEXT,
+    depends_on_json          TEXT NOT NULL DEFAULT '[]',
+    result_summary           TEXT,
+    result_artifact_ids_json TEXT NOT NULL DEFAULT '[]',
+    error_summary            TEXT,
+    created_at               TEXT NOT NULL,
+    completed_at             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_nodes_tree
+    ON task_nodes (tree_id);
+CREATE INDEX IF NOT EXISTS idx_task_nodes_status
+    ON task_nodes (tree_id, status);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id             TEXT PRIMARY KEY,
+    task_node_id   TEXT,
+    session_id     TEXT NOT NULL,
+    trace_id       TEXT,
+    type           TEXT NOT NULL,
+    title          TEXT NOT NULL,
+    summary        TEXT NOT NULL DEFAULT '',
+    content_ref    TEXT NOT NULL,
+    size_bytes     INTEGER,
+    token_estimate INTEGER,
+    created_at     TEXT NOT NULL,
+    expires_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_session
+    ON artifacts (session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_task_node
+    ON artifacts (task_node_id);
+
+-- ─── conversation bus (Section 8.11.10) ────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS conversation_ownerships (
+    id               TEXT PRIMARY KEY,
+    session_id       TEXT NOT NULL,
+    agent_id         TEXT NOT NULL,
+    agent_type       TEXT NOT NULL,
+    sub_task_id      TEXT,
+    interaction_mode TEXT NOT NULL,
+    acquired_at      TEXT NOT NULL,
+    released_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ownership_session_active
+    ON conversation_ownerships (session_id, released_at);
+
+CREATE TABLE IF NOT EXISTS sub_channels (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    sub_task_id     TEXT NOT NULL,
+    agent_id        TEXT,
+    agent_type      TEXT,
+    status          TEXT NOT NULL,
+    can_interrupt   INTEGER NOT NULL DEFAULT 1,
+    interrupt_cost  TEXT NOT NULL DEFAULT 'low',
+    tentacle_path   TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sub_channels_session
+    ON sub_channels (session_id, status);
+
+CREATE TABLE IF NOT EXISTS sub_task_checkpoints (
+    id                       TEXT PRIMARY KEY,
+    sub_task_id              TEXT NOT NULL,
+    agent_id                 TEXT,
+    completed_steps_json     TEXT NOT NULL DEFAULT '[]',
+    working_set_snapshot     TEXT NOT NULL DEFAULT '',
+    pinned_findings_json     TEXT NOT NULL DEFAULT '[]',
+    artifact_ids_so_far_json TEXT NOT NULL DEFAULT '[]',
+    resume_hint              TEXT NOT NULL DEFAULT '',
+    created_at               TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_checkpoints_sub_task
+    ON sub_task_checkpoints (sub_task_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS pending_user_messages (
+    id                 TEXT PRIMARY KEY,
+    session_id         TEXT NOT NULL,
+    content            TEXT NOT NULL,
+    routing_decision   TEXT,
+    resolved           INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_messages_session
+    ON pending_user_messages (session_id, resolved, created_at);
+
+-- ─── steer signals (Section 9.11.6) ────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS steer_signals (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    sub_task_id     TEXT NOT NULL,
+    trace_id        TEXT,
+    content         TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    inject_at       TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    created_at      TEXT NOT NULL,
+    injected_at     TEXT,
+    acknowledged_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_steer_sub_task
+    ON steer_signals (sub_task_id, status);
 "#;
 
 pub fn run(conn: &Connection) -> DbResult<()> {

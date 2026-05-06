@@ -5,10 +5,12 @@
 //! vector retrieval will be added once the storage layer ships sqlite-vec
 //! support; until then this gives us deterministic, testable recall.
 
+pub mod compression;
 pub mod manager;
 pub mod retrieval;
 pub mod trust;
 
+pub use compression::*;
 pub use manager::{MemoryManager, WriteOutcome};
 pub use retrieval::{Retrieval, RetrievedMemory};
 
