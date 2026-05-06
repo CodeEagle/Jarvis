@@ -7,13 +7,20 @@
 
 pub mod cold_start;
 pub mod compression;
+pub mod dream;
 pub mod lint;
 pub mod manager;
+pub mod persona;
 pub mod retrieval;
 pub mod trust;
 
 pub use cold_start::{ColdStartSnapshot, ColdStartStore, SnapshotInputs};
+pub use dream::{
+    ClusterPolicy, ClusterReport, DreamCluster, DreamInference,
+    EvaluationOutcome, InferenceCandidate, InferencePolicy, InferenceReport,
+};
 pub use lint::{LintReport, MemoryLint};
+pub use persona::{Persona, PersonaLayer};
 
 pub use compression::*;
 pub use manager::{MemoryManager, WriteOutcome};

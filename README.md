@@ -61,7 +61,7 @@ crates/
                         growth events / growth artifacts
 ```
 
-**151 unit tests pass** across the workspace.
+**166 unit tests pass** across the workspace.
 
 ---
 
@@ -131,19 +131,20 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 
 ```
 jarvis-core         13 tests
-jarvis-db           13 tests   (incl. session_snapshot immutability)
-jarvis-memory       28 tests   (incl. cold-start retire, lint duplicates/
-                               scratch/inference/lessons, FTS5 keyword
-                               retrieval)
+jarvis-db           13 tests
+jarvis-memory       36 tests   (incl. cold-start retire, lint, FTS5,
+                               Dream cluster, Dream inference promotion
+                               + refutation, Persona render + sync)
 jarvis-tools         8 tests
-jarvis-growth       10 tests
+jarvis-growth       17 tests   (incl. dynamic model up/downgrade with
+                               debounce, token-budget self-learning)
 jarvis-orchestrator 42 tests   (incl. workspace lock, walkthrough auto-
-                               approval, verifier file checks, activity
-                               card lifecycle, regression classifier)
+                               approval, verifier, activity-card,
+                               regression classifier)
 jarvis-router       28 tests
 jarvis-control       9 tests
 ─────────────────
-TOTAL              151 tests
+TOTAL              166 tests
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,
@@ -185,11 +186,12 @@ etc.
 - ⬜ Codex steer adapter
 - ⬜ soft / hard / async interrupt with Watchdog escalation
 
-### v0.4
-- Dream system (lint + cluster + inference)
-- Dynamic model up/downgrade with debouncing
-- token-budget self-learning (`preferred_context_budget`)
-- Persona layer
+### v0.4 (in progress)
+- ✅ Dream system: lint, cluster, inference (this commit)
+- ✅ Dynamic model up/downgrade with debouncing (this commit)
+- ✅ token-budget self-learning with ±40% guardrail (this commit)
+- ✅ Persona layer (persona.md + user.md sync) (this commit)
+- ⬜ Inject Persona stable block into the Router/Orchestrator system prompt
 
 ### v1.0
 - Growth Dashboard, multi-device sync, Qdrant / pgvector,

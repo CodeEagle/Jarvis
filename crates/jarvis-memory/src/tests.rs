@@ -424,6 +424,184 @@ fn cold_start_snapshot_retires_after_used_turns() {
     assert!(active.is_none(), "snapshot should retire after used_turns >= valid_for_turns");
 }
 
+// ── dream cluster + inference (Section 30.8) ────────────────────────────
+
+#[cfg(test)]
+fn write_episode(db: &Db, id: &str, content: &str, age_minutes: i64) -> Memory {
+    let n = now() - chrono::Duration::minutes(age_minutes);
+    let m = Memory {
+        id: id.into(),
+        r#type: MemoryType::EpisodeMemory,
+        scope: "global".into(),
+        content: content.into(),
+        entities: vec![],
+        confidence: 0.7,
+        trust_score: 0.7,
+        half_life_days: MemoryType::EpisodeMemory.half_life_days(),
+        retrieve_count: 0,
+        last_retrieved_at: None,
+        source_trace_id: None,
+        source_type: SourceType::TaskResult,
+        conflict_ids: vec![],
+        status: MemoryStatus::Approved,
+        emotion_energy: 0.0,
+        emotion_polarity: EmotionPolarity::Neutral,
+        tier: 4,
+        expires_at: None,
+        cluster_member_ids: vec![],
+        created_at: n,
+        updated_at: n,
+    };
+    jarvis_db::memory_repo::upsert(
+        db,
+        &m,
+        jarvis_db::memory_repo::WriteOpts {
+            change_type: MemoryChangeType::Created,
+            source_module: None,
+            reason: None,
+        },
+    )
+    .unwrap();
+    m
+}
+
+#[test]
+fn dream_cluster_builds_cluster_memory_from_related_fragments() {
+    let db = Db::in_memory().unwrap();
+    write_episode(&db, "f1", "调试 sync_manager 找到 race condition", 0);
+    write_episode(&db, "f2", "调试 sync_manager 修复 race condition 完成", 60);
+    write_episode(&db, "f3", "调试 sync_manager 添加测试用例", 120);
+
+    let dream = dream::DreamCluster::with_policy(
+        db.clone(),
+        dream::ClusterPolicy {
+            time_window_hours: 24,
+            min_members: 2,
+            similarity_threshold: 0.30,
+            member_trust_drop: 0.10,
+        },
+    );
+    let report = dream.run("global").unwrap();
+    assert!(report.clusters_created >= 1);
+    assert!(report.members_absorbed >= 2);
+}
+
+#[test]
+fn dream_cluster_skips_when_below_min_members() {
+    let db = Db::in_memory().unwrap();
+    write_episode(&db, "alone", "孤立片段", 0);
+    let dream = dream::DreamCluster::new(db);
+    let report = dream.run("global").unwrap();
+    assert_eq!(report.clusters_created, 0);
+}
+
+#[test]
+fn dream_inference_refuted_when_counter_evidence() {
+    let db = Db::in_memory().unwrap();
+    let inf = dream::DreamInference::new(db);
+    let outcome = inf
+        .evaluate(dream::InferenceCandidate {
+            scope: "global",
+            claim: "用户从不在周末工作",
+            supporting_evidence: 5,
+            counter_evidence: 1,
+            source_trace_id: None,
+        })
+        .unwrap();
+    assert_eq!(outcome, dream::EvaluationOutcome::Refuted);
+}
+
+#[test]
+fn dream_inference_promoted_to_fact_at_threshold() {
+    let db = Db::in_memory().unwrap();
+    let inf = dream::DreamInference::new(db.clone());
+    let outcome = inf
+        .evaluate(dream::InferenceCandidate {
+            scope: "global",
+            claim: "用户偏好凌晨写代码",
+            supporting_evidence: 3,
+            counter_evidence: 0,
+            source_trace_id: None,
+        })
+        .unwrap();
+    let mem_id = match outcome {
+        dream::EvaluationOutcome::ConfirmedAsFact { memory_id } => memory_id,
+        other => panic!("expected confirmation, got {other:?}"),
+    };
+    let stored = jarvis_db::memory_repo::get(&db, &mem_id).unwrap().unwrap();
+    assert_eq!(stored.r#type, MemoryType::FactMemory);
+    // Section 12.6 says confirmed inferences cap at 0.75.
+    assert!((stored.confidence - 0.75).abs() < 1e-3);
+}
+
+#[test]
+fn dream_inference_below_threshold_creates_tentative_with_expiry() {
+    let db = Db::in_memory().unwrap();
+    let inf = dream::DreamInference::new(db.clone());
+    let outcome = inf
+        .evaluate(dream::InferenceCandidate {
+            scope: "global",
+            claim: "可能偏好 React 而非 Vue",
+            supporting_evidence: 2,
+            counter_evidence: 0,
+            source_trace_id: None,
+        })
+        .unwrap();
+    let mem_id = match outcome {
+        dream::EvaluationOutcome::TentativeInference { memory_id } => memory_id,
+        other => panic!("expected tentative, got {other:?}"),
+    };
+    let stored = jarvis_db::memory_repo::get(&db, &mem_id).unwrap().unwrap();
+    assert_eq!(stored.r#type, MemoryType::InferenceMemory);
+    assert!(stored.expires_at.is_some());
+}
+
+// ── persona layer ───────────────────────────────────────────────────────
+
+#[test]
+fn persona_layer_writes_and_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let layer = persona::PersonaLayer::new(dir.path());
+    layer.write_persona("## 语气\n简洁直接").unwrap();
+    let p = layer.load().unwrap();
+    assert!(p.persona_md.contains("简洁直接"));
+}
+
+#[test]
+fn persona_user_md_synced_from_preference_memory() {
+    let mgr = fresh_manager();
+    mgr.write(manager::WriteRequest {
+        r#type: MemoryType::PreferenceMemory,
+        scope: "global",
+        content: "代码风格偏好函数式",
+        entities: vec![],
+        source_type: SourceType::UserExplicit,
+        source_trace_id: None,
+        tier: 1,
+        emotion_energy: 0.0,
+        emotion_polarity: EmotionPolarity::Neutral,
+        reason: None,
+    })
+    .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let layer = persona::PersonaLayer::new(dir.path());
+    let body = layer.sync_user_from_memory(mgr.db()).unwrap();
+    assert!(body.contains("代码风格偏好函数式"));
+}
+
+#[test]
+fn persona_render_stable_block_combines_blocks() {
+    let layer = persona::PersonaLayer::new(std::env::temp_dir().join("persona_test"));
+    let p = persona::Persona {
+        persona_md: "P".into(),
+        user_md: "U".into(),
+    };
+    let block = layer.render_stable_block(&p);
+    assert!(block.contains("P"));
+    assert!(block.contains("U"));
+}
+
 // ── memory lint (Section 30.8) ──────────────────────────────────────────
 
 #[cfg(test)]

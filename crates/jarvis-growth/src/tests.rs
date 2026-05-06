@@ -157,6 +157,129 @@ fn apply_promote_advances_status_and_version() {
     assert_eq!(art.version, v0 + 1);
 }
 
+// ── model selector + budget learner (Section 30.14) ────────────────────
+
+#[test]
+fn complex_task_triggers_upgrade_after_debounce() {
+    use model_policy::*;
+    // Just upgraded — must hold for 3 tasks before re-evaluating.
+    assert_eq!(
+        select(&ModelSelectionContext {
+            current: ModelTier::Sonnet,
+            task_complexity: TaskComplexity::Complex,
+            recent_failure_rate: 0.5,
+            pressure_ratio: 0.5,
+            usage_budget_ratio: 0.5,
+            tasks_since_upgrade: 1,
+            tasks_since_downgrade: 99,
+            auto_downgrade_enabled: true,
+        }),
+        ModelDecision::Hold
+    );
+    // After debounce window — upgrade.
+    assert_eq!(
+        select(&ModelSelectionContext {
+            current: ModelTier::Sonnet,
+            task_complexity: TaskComplexity::Complex,
+            recent_failure_rate: 0.5,
+            pressure_ratio: 0.5,
+            usage_budget_ratio: 0.5,
+            tasks_since_upgrade: 5,
+            tasks_since_downgrade: 99,
+            auto_downgrade_enabled: true,
+        }),
+        ModelDecision::Upgrade
+    );
+}
+
+#[test]
+fn simple_task_with_budget_pressure_downgrades() {
+    use model_policy::*;
+    assert_eq!(
+        select(&ModelSelectionContext {
+            current: ModelTier::Sonnet,
+            task_complexity: TaskComplexity::Simple,
+            recent_failure_rate: 0.05,
+            pressure_ratio: 0.40,
+            usage_budget_ratio: 0.85,
+            tasks_since_upgrade: 99,
+            tasks_since_downgrade: 99,
+            auto_downgrade_enabled: true,
+        }),
+        ModelDecision::Downgrade
+    );
+}
+
+#[test]
+fn auto_downgrade_disabled_holds() {
+    use model_policy::*;
+    assert_eq!(
+        select(&ModelSelectionContext {
+            current: ModelTier::Sonnet,
+            task_complexity: TaskComplexity::Simple,
+            recent_failure_rate: 0.05,
+            pressure_ratio: 0.40,
+            usage_budget_ratio: 0.85,
+            tasks_since_upgrade: 99,
+            tasks_since_downgrade: 99,
+            auto_downgrade_enabled: false,
+        }),
+        ModelDecision::Hold
+    );
+}
+
+#[test]
+fn opus_does_not_upgrade_further() {
+    use model_policy::*;
+    assert_eq!(
+        select(&ModelSelectionContext {
+            current: ModelTier::Opus,
+            task_complexity: TaskComplexity::Complex,
+            recent_failure_rate: 0.9,
+            pressure_ratio: 0.9,
+            usage_budget_ratio: 0.5,
+            tasks_since_upgrade: 99,
+            tasks_since_downgrade: 99,
+            auto_downgrade_enabled: true,
+        }),
+        ModelDecision::Hold
+    );
+}
+
+#[test]
+fn budget_shrinks_after_three_low_usage_runs() {
+    use model_policy::*;
+    let new = adjust_budget(BudgetAdjustmentInputs {
+        current_budget: 8000,
+        recent_usage_ratios: [0.3, 0.4, 0.45],
+        recent_force_compresses: 0,
+    });
+    assert_eq!(new, (8000.0 * 0.80) as u32);
+}
+
+#[test]
+fn budget_grows_after_two_force_compresses() {
+    use model_policy::*;
+    let new = adjust_budget(BudgetAdjustmentInputs {
+        current_budget: 8000,
+        recent_usage_ratios: [0.7, 0.8, 0.9],
+        recent_force_compresses: 2,
+    });
+    assert_eq!(new, (8000.0 * 1.15) as u32);
+}
+
+#[test]
+fn budget_never_deviates_more_than_40_percent() {
+    use model_policy::*;
+    let new = adjust_budget(BudgetAdjustmentInputs {
+        current_budget: 8000,
+        recent_usage_ratios: [0.05, 0.05, 0.05],
+        recent_force_compresses: 99,
+    });
+    assert!(new >= (8000.0 * 0.6) as u32);
+    assert!(new <= (8000.0 * 1.4) as u32);
+}
+
 #[test]
 fn apply_block_keeps_candidate_status() {
     let mut art = candidate(ArtifactType::SkillCandidate);
