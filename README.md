@@ -61,7 +61,7 @@ crates/
                         growth events / growth artifacts
 ```
 
-**197 unit tests pass** across the workspace.
+**205 unit tests pass** across the workspace.
 
 ---
 
@@ -131,18 +131,17 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 
 ```
 jarvis-core         13 tests
-jarvis-db           15 tests
+jarvis-db           21 tests   (+6: redactor patterns + auto-redact in
+                               raw_event_log)
 jarvis-memory       36 tests
 jarvis-tools         8 tests
-jarvis-growth       21 tests   (+4: skill round-trip + match,
-                               regression-runner pass + fail)
-jarvis-orchestrator 59 tests   (+7: steer adapter append+drain,
-                               admissibility (override / empty / ok),
-                               durable lock exclusive + drop + sweep)
+jarvis-growth       21 tests
+jarvis-orchestrator 61 tests   (+2: pipeline auto-approves + skips
+                               walkthrough on failure)
 jarvis-router       36 tests
 jarvis-control       9 tests
 ─────────────────
-TOTAL              197 tests
+TOTAL              205 tests
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,

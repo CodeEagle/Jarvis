@@ -377,6 +377,82 @@ fn session_snapshot_blocks_update() {
     assert!(format!("{err}").contains("immutable"));
 }
 
+// ── redactor (Section 15.6) ────────────────────────────────────────────
+
+#[test]
+fn redactor_masks_anthropic_api_key() {
+    let raw = "key=sk-ant-abcdefghijklmnopqrstuv";
+    let (safe, hits) = redactor::redact(raw);
+    assert!(safe.contains("[REDACTED]"));
+    assert!(hits.contains(&"anthropic_api_key"));
+}
+
+#[test]
+fn redactor_masks_authorization_header() {
+    let raw = "POST /x HTTP/1.1\nAuthorization: Bearer abc.def-1234\n";
+    let (safe, hits) = redactor::redact(raw);
+    assert!(safe.contains("[REDACTED]"));
+    assert!(hits.contains(&"bearer_header"));
+}
+
+#[test]
+fn redactor_masks_email_and_phone() {
+    let raw = "联系 13800001234 或 me@example.com";
+    let (safe, hits) = redactor::redact(raw);
+    assert!(safe.contains("[REDACTED]"));
+    assert!(hits.contains(&"cn_phone"));
+    assert!(hits.contains(&"email_address"));
+}
+
+#[test]
+fn redactor_returns_empty_hits_for_clean_text() {
+    let raw = "OpenWrt DNS hosts 不生效";
+    let (safe, hits) = redactor::redact(raw);
+    assert_eq!(safe, raw);
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn raw_event_log_auto_populates_safe_content_for_secrets() {
+    let db = fresh_db();
+    let seq = raw_event_log::append(
+        &db,
+        raw_event_log::AppendEvent {
+            event_type: RawEventKind::UserMessage,
+            session_id: None,
+            trace_id: None,
+            agent_id: None,
+            raw_content: "my key sk-ant-abcdefghijklmnopqrstuv leaked",
+            safe_content: None,
+        },
+    )
+    .unwrap();
+    let evt = raw_event_log::get(&db, seq).unwrap();
+    assert!(evt.raw_content.contains("sk-ant-"));
+    let safe = evt.safe_content.expect("auto-redacted safe_content");
+    assert!(safe.contains("[REDACTED]"));
+    assert!(!safe.contains("sk-ant-"));
+}
+
+#[test]
+fn raw_event_log_leaves_safe_content_none_when_clean() {
+    let db = fresh_db();
+    let seq = raw_event_log::append(
+        &db,
+        raw_event_log::AppendEvent {
+            event_type: RawEventKind::UserMessage,
+            session_id: None,
+            trace_id: None,
+            agent_id: None,
+            raw_content: "OpenWrt DNS hosts 不生效",
+            safe_content: None,
+        },
+    )
+    .unwrap();
+    let evt = raw_event_log::get(&db, seq).unwrap();
+    assert!(evt.safe_content.is_none());
+}
+
 #[test]
 fn provenance_replay_returns_baseline_and_subsequent_events() {
     let db = fresh_db();

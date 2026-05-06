@@ -98,6 +98,19 @@ pub fn append(db: &Db, ev: AppendEvent<'_>) -> DbResult<i64> {
 pub(crate) fn append_with_conn(conn: &Connection, ev: AppendEvent<'_>) -> DbResult<i64> {
     let ts = now_iso();
     let checksum = compute_checksum(&ts, ev.event_type.as_str(), ev.raw_content);
+    // Auto-redact when callers don't supply safe_content. The raw
+    // value still hits raw_content untouched — that's the spec.
+    let derived: Option<String> = match ev.safe_content {
+        Some(s) => Some(s.to_string()),
+        None => {
+            let (safe, hits) = crate::redactor::redact(ev.raw_content);
+            if hits.is_empty() {
+                None
+            } else {
+                Some(safe)
+            }
+        }
+    };
     conn.execute(
         "INSERT INTO raw_event_log
             (ts, event_type, session_id, trace_id, agent_id,
@@ -110,7 +123,7 @@ pub(crate) fn append_with_conn(conn: &Connection, ev: AppendEvent<'_>) -> DbResu
             ev.trace_id,
             ev.agent_id,
             ev.raw_content,
-            ev.safe_content,
+            derived,
             checksum,
         ],
     )?;

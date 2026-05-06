@@ -391,6 +391,8 @@ dependencies = [
  "chrono",
  "hex",
  "jarvis-core",
+ "once_cell",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

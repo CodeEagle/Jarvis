@@ -12,6 +12,7 @@ pub mod commands;
 pub mod conversation_bus;
 pub mod dispatch;
 pub mod interrupt;
+pub mod pipeline;
 pub mod regression;
 pub mod steer;
 pub mod steer_adapter;
@@ -36,6 +37,7 @@ pub use dispatch::{
 pub use interrupt::{
     InterruptController, InterruptKind, InterruptOutcome, InterruptPolicy,
 };
+pub use pipeline::{OrchestrationPipeline, PipelineOutcome, WalkthroughBuilder};
 pub use steer::*;
 pub use steer_adapter::{
     admissibility_check, AdapterError, AdapterMode, AdapterPayload, RecordingAdapter,

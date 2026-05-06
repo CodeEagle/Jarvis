@@ -879,6 +879,114 @@ fn regression_skips_unapproved_walkthrough() {
     assert_eq!(report.items.len(), 0);
 }
 
+// ── orchestration pipeline ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn pipeline_runs_subtask_and_auto_approves_walkthrough() {
+    let db = Db::in_memory().unwrap();
+    let pipeline = pipeline::OrchestrationPipeline::new(db.clone());
+    let driver: dispatch::DriverHandle = std::sync::Arc::new(
+        dispatch::InProcessDriver::new("test", |env| sub_task::SubTaskResult {
+            sub_task_id: env.sub_task_id,
+            status: sub_task::SubTaskStatus::Success,
+            summary: "did the thing".into(),
+            artifact_ids: vec![],
+            escalation: None,
+            token_used: 1,
+            tool_calls_count: 0,
+            completed_at: chrono::Utc::now(),
+        }),
+    );
+    let envelope = SubTaskEnvelope {
+        sub_task_id: new_id_with_prefix("st"),
+        parent_task_id: "task_root".into(),
+        trace_id: "trc".into(),
+        title: "do the thing".into(),
+        instruction: "do it".into(),
+        depends_on_results: vec![],
+        input_artifact_refs: vec![],
+        tool_scope: jarvis_core::tool::ToolScope::empty(),
+        output_spec: OutputSpec {
+            format: "text".into(),
+            max_tokens: 100,
+        },
+        constraints: SubTaskConstraints {
+            max_tool_calls: 0,
+            max_file_reads: 0,
+            token_budget: 100,
+            timeout_ms: 1000,
+        },
+        tentacle_path: None,
+    };
+    let builder: pipeline::WalkthroughBuilder = std::sync::Arc::new(|res| {
+        let mut doc = walkthrough::new_draft(
+            &res.sub_task_id,
+            "_set_by_pipeline",
+            "coding",
+            "did the thing",
+        );
+        doc.verification_status = walkthrough::VerificationStatus::Verified;
+        doc.sections = vec![walkthrough::new_section(
+            walkthrough::SectionType::Summary,
+            "summary",
+            &res.summary,
+        )];
+        doc
+    });
+    let outcome = pipeline
+        .run_sub_task("sess_1", "coding", envelope, driver, Some(builder))
+        .await
+        .unwrap();
+    assert_eq!(outcome.sub_task_result.status, sub_task::SubTaskStatus::Success);
+    assert!(outcome.walkthrough_doc_id.is_some());
+    assert_eq!(
+        outcome.auto_decision,
+        Some(walkthrough::AutoApprovalDecision::AutoApprove)
+    );
+}
+
+#[tokio::test]
+async fn pipeline_skips_walkthrough_when_subtask_fails() {
+    let db = Db::in_memory().unwrap();
+    let pipeline = pipeline::OrchestrationPipeline::new(db);
+    let driver: dispatch::DriverHandle = std::sync::Arc::new(
+        dispatch::InProcessDriver::new("oops", |env| {
+            dispatch::failed_result(&env.sub_task_id, "boom")
+        }),
+    );
+    let envelope = SubTaskEnvelope {
+        sub_task_id: new_id_with_prefix("st"),
+        parent_task_id: "task_root".into(),
+        trace_id: "trc".into(),
+        title: "x".into(),
+        instruction: "x".into(),
+        depends_on_results: vec![],
+        input_artifact_refs: vec![],
+        tool_scope: jarvis_core::tool::ToolScope::empty(),
+        output_spec: OutputSpec {
+            format: "text".into(),
+            max_tokens: 100,
+        },
+        constraints: SubTaskConstraints {
+            max_tool_calls: 0,
+            max_file_reads: 0,
+            token_budget: 100,
+            timeout_ms: 1000,
+        },
+        tentacle_path: None,
+    };
+    let builder: pipeline::WalkthroughBuilder = std::sync::Arc::new(|_| {
+        walkthrough::new_draft("x", "x", "coding", "x")
+    });
+    let outcome = pipeline
+        .run_sub_task("sess_1", "coding", envelope, driver, Some(builder))
+        .await
+        .unwrap();
+    assert_eq!(outcome.sub_task_result.status, sub_task::SubTaskStatus::Failed);
+    assert!(outcome.walkthrough_doc_id.is_none());
+    assert!(outcome.auto_decision.is_none());
+}
+
 // ── steer adapter (Section 9.11.5) ──────────────────────────────────────
 
 #[tokio::test]
