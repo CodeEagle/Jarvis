@@ -19,6 +19,7 @@ pub mod mention_log;
 pub mod migrations;
 pub mod raw_event_log;
 pub mod session_repo;
+pub mod session_snapshot;
 
 pub use conn::Db;
 pub use error::DbError;

@@ -310,6 +310,74 @@ fn append_message_touches_session_last_active() {
 }
 
 #[test]
+fn session_snapshot_seq_monotonic_per_session() {
+    let db = fresh_db();
+    let s1 = session_snapshot::append(
+        &db,
+        session_snapshot::SnapshotDraft {
+            session_id: "sess_a",
+            reason: "rolling_summary_updated",
+            rolling_summary: Some("v1"),
+            active_entities_json: None,
+            unresolved_json: None,
+            resolved_json: None,
+            task_tree_json: None,
+            artifact_index_json: None,
+        },
+    )
+    .unwrap();
+    let s2 = session_snapshot::append(
+        &db,
+        session_snapshot::SnapshotDraft {
+            session_id: "sess_a",
+            reason: "task_complete",
+            rolling_summary: Some("v2"),
+            active_entities_json: None,
+            unresolved_json: None,
+            resolved_json: None,
+            task_tree_json: None,
+            artifact_index_json: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(s1.seq, 1);
+    assert_eq!(s2.seq, 2);
+    let latest = session_snapshot::latest(&db, "sess_a").unwrap().unwrap();
+    assert_eq!(latest.seq, 2);
+    assert_eq!(latest.rolling_summary.as_deref(), Some("v2"));
+}
+
+#[test]
+fn session_snapshot_blocks_update() {
+    let db = fresh_db();
+    let s = session_snapshot::append(
+        &db,
+        session_snapshot::SnapshotDraft {
+            session_id: "sess_a",
+            reason: "manual",
+            rolling_summary: Some("hi"),
+            active_entities_json: None,
+            unresolved_json: None,
+            resolved_json: None,
+            task_tree_json: None,
+            artifact_index_json: None,
+        },
+    )
+    .unwrap();
+    let err = db
+        .with(|conn| {
+            conn.execute(
+                "UPDATE session_snapshots SET rolling_summary = 'tampered' WHERE id = ?1",
+                rusqlite::params![s.id],
+            )
+            .map_err(error::DbError::Sqlite)?;
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(format!("{err}").contains("immutable"));
+}
+
+#[test]
 fn list_recent_returns_only_active_sessions() {
     let db = fresh_db();
     let mut a = sample_session("sess_a");

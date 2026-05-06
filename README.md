@@ -61,7 +61,7 @@ crates/
                         growth events / growth artifacts
 ```
 
-**121 unit tests pass** across the workspace.
+**139 unit tests pass** across the workspace.
 
 ---
 
@@ -131,15 +131,17 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 
 ```
 jarvis-core         13 tests
-jarvis-db           11 tests
-jarvis-memory       20 tests   (incl. 8 compression + emotion-resonance)
+jarvis-db           13 tests   (incl. session_snapshot immutability)
+jarvis-memory       20 tests
 jarvis-tools         8 tests
 jarvis-growth       10 tests
-jarvis-orchestrator 22 tests
+jarvis-orchestrator 38 tests   (incl. workspace lock, walkthrough auto-
+                               approval, verifier file checks, activity
+                               card lifecycle)
 jarvis-router       28 tests
 jarvis-control       9 tests
 ─────────────────
-TOTAL              121 tests
+TOTAL              139 tests
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,
@@ -162,16 +164,19 @@ etc.
 - ✅ SubTaskCheckpoint for soft-interrupt resume
 - ✅ Steer protocol with throttle + audit
 - ✅ Tentacle file generator (CONTEXT.md write-protected; HANDOFF.md one-shot)
+- ✅ Workspace lock (Reader/Writer mode) + Worktree manager
+- ✅ ActivityCard storage with lifecycle transitions
+- ✅ session_snapshots immutable store (Section 15.7.4)
 - ⬜ LLM judgment layer (currently rule-only)
 - ⬜ Sub-agent dispatch with worker-process driver
-- ⬜ Worktree manager + workspace lock
-- ⬜ ActivityCard rendering for collaboration panel
 
 ### v0.3
-- WalkthroughAgent / VerifierAgent
-- RegressionOrchestrator
-- Codex steer adapter
-- soft / hard / async interrupt with Watchdog escalation
+- ✅ WalkthroughDoc + auto-approval policy (data layer in v0.2)
+- ✅ VerifierAgent + file_exists / file_content checks (v0.2)
+- ⬜ Test/lint runners through ToolRuntime
+- ⬜ RegressionOrchestrator (parallel re-verification)
+- ⬜ Codex steer adapter
+- ⬜ soft / hard / async interrupt with Watchdog escalation
 
 ### v0.4
 - Dream system (lint + cluster + inference)

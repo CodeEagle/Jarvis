@@ -403,6 +403,92 @@ CREATE TABLE IF NOT EXISTS steer_signals (
 
 CREATE INDEX IF NOT EXISTS idx_steer_sub_task
     ON steer_signals (sub_task_id, status);
+
+-- ─── walkthrough docs / verifier checks (Section 8.16.5) ───────────────
+
+CREATE TABLE IF NOT EXISTS walkthrough_docs (
+    id                  TEXT PRIMARY KEY,
+    sub_task_id         TEXT NOT NULL,
+    session_id          TEXT NOT NULL,
+    trace_id            TEXT,
+    title               TEXT NOT NULL,
+    generated_at        TEXT NOT NULL,
+    agent_type          TEXT NOT NULL,
+    sections_json       TEXT NOT NULL DEFAULT '[]',
+    verification_status TEXT NOT NULL DEFAULT 'pending',
+    verification_notes  TEXT,
+    verified_at         TEXT,
+    approval_status     TEXT NOT NULL DEFAULT 'pending',
+    approved_by         TEXT,
+    approved_at         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_walkthrough_session
+    ON walkthrough_docs (session_id, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_walkthrough_approval
+    ON walkthrough_docs (approval_status, verification_status);
+
+CREATE TABLE IF NOT EXISTS verifier_checks (
+    id                  TEXT PRIMARY KEY,
+    walkthrough_doc_id  TEXT NOT NULL,
+    section_id          TEXT NOT NULL,
+    check_type          TEXT NOT NULL,
+    expected            TEXT NOT NULL,
+    actual              TEXT,
+    match_result        INTEGER,
+    discrepancy         TEXT,
+    executed_at         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_verifier_doc
+    ON verifier_checks (walkthrough_doc_id);
+
+-- ─── activity cards (collaboration panel data layer) ───────────────────
+
+CREATE TABLE IF NOT EXISTS activity_cards (
+    id                  TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL,
+    sub_task_id         TEXT,
+    trace_id            TEXT,
+    agent_type          TEXT NOT NULL,
+    agent_display_name  TEXT NOT NULL,
+    agent_avatar_emoji  TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    title               TEXT NOT NULL,
+    current_action      TEXT,
+    progress_text       TEXT,
+    result_summary      TEXT,
+    error_message       TEXT,
+    interaction_json    TEXT,
+    artifacts_json      TEXT,
+    is_expanded         INTEGER NOT NULL DEFAULT 1,
+    can_interrupt       INTEGER NOT NULL DEFAULT 1,
+    interrupt_cost      TEXT NOT NULL DEFAULT 'low',
+    started_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    completed_at        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_cards_session
+    ON activity_cards (session_id, started_at DESC);
+
+-- ─── session snapshots / cold-start snapshots (Section 9.5.5 / 15.7.4) ─
+
+CREATE TABLE IF NOT EXISTS cold_start_snapshots (
+    id                   TEXT PRIMARY KEY,
+    session_id           TEXT NOT NULL,
+    captured_at          TEXT NOT NULL,
+    rolling_summary      TEXT NOT NULL DEFAULT '',
+    recent_messages_json TEXT NOT NULL DEFAULT '[]',
+    memory_hits_json     TEXT NOT NULL DEFAULT '[]',
+    cross_session_json   TEXT NOT NULL DEFAULT '[]',
+    valid_for_turns      INTEGER NOT NULL DEFAULT 5,
+    used_turns           INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_cold_start_session
+    ON cold_start_snapshots (session_id, created_at DESC);
 "#;
 
 pub fn run(conn: &Connection) -> DbResult<()> {
