@@ -453,6 +453,7 @@ name = "jarvis-router"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "jarvis-core",
  "jarvis-db",
@@ -464,6 +465,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "tokio",
  "tracing",
 ]
 

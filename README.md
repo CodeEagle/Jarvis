@@ -61,7 +61,7 @@ crates/
                         growth events / growth artifacts
 ```
 
-**172 unit tests pass** across the workspace.
+**177 unit tests pass** across the workspace.
 
 ---
 
@@ -135,11 +135,12 @@ jarvis-db           13 tests
 jarvis-memory       36 tests
 jarvis-tools         8 tests
 jarvis-growth       17 tests
-jarvis-orchestrator 46 tests   (+4: commands.json runner lifecycle)
-jarvis-router       30 tests   (+2: stable system prompt assembler)
+jarvis-orchestrator 48 tests   (+2: in-process dispatcher success + failure)
+jarvis-router       33 tests   (+3: RuleBasedJudge dominant intent /
+                               new-session / weak-hint clarification)
 jarvis-control       9 tests
 ─────────────────
-TOTAL              172 tests
+TOTAL              177 tests
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,
@@ -191,6 +192,12 @@ etc.
   to feed into LLM clients.
 - ✅ commands.json catalogue + CommandRunner state machine
   (Section 8.17) — defaults catalogue covers 6 of the 7 PRD commands
+- ✅ Pluggable `LlmJudge` trait + `RuleBasedJudge` fallback (Section 5.4
+  + 5.5). Concrete network-backed adapters live in dedicated crates so
+  the router stays provider-agnostic.
+- ✅ `SubAgentDriver` trait + `InProcessDriver` + `SubAgentDispatcher`
+  glue (Section 8.6 / 9.4). Drives a `SubTaskEnvelope` through any
+  driver and persists the lifecycle (sub_channel + task_node status).
 
 ### v1.0
 - Growth Dashboard, multi-device sync, Qdrant / pgvector,

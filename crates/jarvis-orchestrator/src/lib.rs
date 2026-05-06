@@ -10,6 +10,7 @@ pub mod artifact_registry;
 pub mod checkpoint;
 pub mod commands;
 pub mod conversation_bus;
+pub mod dispatch;
 pub mod regression;
 pub mod steer;
 pub mod sub_task;
@@ -27,6 +28,9 @@ pub use commands::{
     CommandExecution, CommandRunner, CommandStatus, CommandStep, StepProgress, StepStatus,
 };
 pub use conversation_bus::*;
+pub use dispatch::{
+    failed_result, DriverHandle, InProcessDriver, SubAgentDispatcher, SubAgentDriver,
+};
 pub use steer::*;
 pub use sub_task::*;
 pub use task_tree::*;

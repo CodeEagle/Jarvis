@@ -330,6 +330,73 @@ fn confidence_never_reaches_one() {
     assert!(decision.confidence < 1.0);
 }
 
+// ── LLM judge (rule-based fallback) ─────────────────────────────────────
+
+#[tokio::test]
+async fn rule_based_judge_uses_dominant_hint_for_intent() {
+    let judge = llm_judge::RuleBasedJudge;
+    let hints = intent::apply_rules("OpenWrt DNS hosts 报错");
+    let agents: Vec<String> = registry()
+        .iter()
+        .filter(|a| a.is_mentionable() || a.r#type == "general")
+        .map(|a| a.r#type.clone())
+        .collect();
+    let outcome = judge
+        .judge(llm_judge::JudgeInputs {
+            user_input: "OpenWrt DNS hosts 报错",
+            trace_id: "trc",
+            task_id: "task",
+            rule_hints: &hints,
+            recent_session_titles: &[],
+            allowed_agents: &agents,
+        })
+        .await
+        .expect("judge should always return for fallback adapter");
+    assert!(outcome.primary_intent.starts_with("devops")
+        || outcome.primary_intent.starts_with("coding"));
+    assert!(outcome.confidence < 1.0);
+}
+
+#[tokio::test]
+async fn rule_based_judge_creates_new_session_when_no_recent() {
+    let judge = llm_judge::RuleBasedJudge;
+    let hints = intent::apply_rules("帮我搜索 Riverpod 教程");
+    let agents = vec!["general".to_string(), "research".to_string()];
+    let outcome = judge
+        .judge(llm_judge::JudgeInputs {
+            user_input: "帮我搜索 Riverpod 教程",
+            trace_id: "trc",
+            task_id: "task",
+            rule_hints: &hints,
+            recent_session_titles: &[],
+            allowed_agents: &agents,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.session_action,
+        jarvis_core::route::SessionAction::CreateNew
+    );
+}
+
+#[tokio::test]
+async fn rule_based_judge_marks_clarification_when_hints_weak() {
+    let judge = llm_judge::RuleBasedJudge;
+    let agents = vec!["general".to_string()];
+    let outcome = judge
+        .judge(llm_judge::JudgeInputs {
+            user_input: "帮我看看",
+            trace_id: "trc",
+            task_id: "task",
+            rule_hints: &[],
+            recent_session_titles: &[],
+            allowed_agents: &agents,
+        })
+        .await
+        .unwrap();
+    assert!(outcome.clarification_needed);
+}
+
 // ── system prompt assembler ─────────────────────────────────────────────
 
 #[test]

@@ -879,6 +879,140 @@ fn regression_skips_unapproved_walkthrough() {
     assert_eq!(report.items.len(), 0);
 }
 
+// ── sub-agent dispatcher (in-process) ───────────────────────────────────
+
+#[tokio::test]
+async fn dispatcher_runs_in_process_driver_and_marks_node_success() {
+    let db = Db::in_memory().unwrap();
+    let tree = TaskTreeStore::new(db.clone());
+    let tree_row = tree.create_tree("task_root", "sess_1", None).unwrap();
+    tree.add_node(
+        &tree_row.id,
+        &TaskNode {
+            id: "node_a".into(),
+            parent_id: None,
+            task_id: "task_a".into(),
+            title: "say hi".into(),
+            intent: "coding.generate".into(),
+            status: TaskStatus::Pending,
+            assigned_agent_type: "coding".into(),
+            assigned_agent_id: None,
+            depends_on: vec![],
+            result_summary: None,
+            result_artifact_ids: vec![],
+            error_summary: None,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        },
+    )
+    .unwrap();
+
+    let driver: dispatch::DriverHandle = std::sync::Arc::new(
+        dispatch::InProcessDriver::new("test-coding", |env| sub_task::SubTaskResult {
+            sub_task_id: env.sub_task_id,
+            status: sub_task::SubTaskStatus::Success,
+            summary: "hi".into(),
+            artifact_ids: vec![],
+            escalation: None,
+            token_used: 1,
+            tool_calls_count: 0,
+            completed_at: chrono::Utc::now(),
+        }),
+    );
+    let envelope = SubTaskEnvelope {
+        sub_task_id: new_id_with_prefix("st"),
+        parent_task_id: "task_root".into(),
+        trace_id: "trc".into(),
+        title: "say hi".into(),
+        instruction: "say hi".into(),
+        depends_on_results: vec![],
+        input_artifact_refs: vec![],
+        tool_scope: jarvis_core::tool::ToolScope::empty(),
+        output_spec: OutputSpec {
+            format: "text".into(),
+            max_tokens: 100,
+        },
+        constraints: SubTaskConstraints {
+            max_tool_calls: 0,
+            max_file_reads: 0,
+            token_budget: 100,
+            timeout_ms: 1000,
+        },
+        tentacle_path: None,
+    };
+    let dispatcher = dispatch::SubAgentDispatcher::new(db);
+    let result = dispatcher
+        .dispatch("sess_1", "node_a", "coding", envelope, driver)
+        .await
+        .unwrap();
+    assert_eq!(result.status, sub_task::SubTaskStatus::Success);
+    let node = tree.get_node("node_a").unwrap().unwrap();
+    assert_eq!(node.status, TaskStatus::Success);
+    assert_eq!(node.result_summary.as_deref(), Some("hi"));
+}
+
+#[tokio::test]
+async fn dispatcher_records_failed_node_when_driver_returns_failed() {
+    let db = Db::in_memory().unwrap();
+    let tree = TaskTreeStore::new(db.clone());
+    let tree_row = tree.create_tree("task_root", "sess_1", None).unwrap();
+    tree.add_node(
+        &tree_row.id,
+        &TaskNode {
+            id: "node_b".into(),
+            parent_id: None,
+            task_id: "task_b".into(),
+            title: "blow up".into(),
+            intent: "coding.generate".into(),
+            status: TaskStatus::Pending,
+            assigned_agent_type: "coding".into(),
+            assigned_agent_id: None,
+            depends_on: vec![],
+            result_summary: None,
+            result_artifact_ids: vec![],
+            error_summary: None,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        },
+    )
+    .unwrap();
+    let driver: dispatch::DriverHandle = std::sync::Arc::new(
+        dispatch::InProcessDriver::new("oops", |env| {
+            dispatch::failed_result(&env.sub_task_id, "boom")
+        }),
+    );
+    let envelope = SubTaskEnvelope {
+        sub_task_id: new_id_with_prefix("st"),
+        parent_task_id: "task_root".into(),
+        trace_id: "trc".into(),
+        title: "x".into(),
+        instruction: "x".into(),
+        depends_on_results: vec![],
+        input_artifact_refs: vec![],
+        tool_scope: jarvis_core::tool::ToolScope::empty(),
+        output_spec: OutputSpec {
+            format: "text".into(),
+            max_tokens: 100,
+        },
+        constraints: SubTaskConstraints {
+            max_tool_calls: 0,
+            max_file_reads: 0,
+            token_budget: 100,
+            timeout_ms: 1000,
+        },
+        tentacle_path: None,
+    };
+    let dispatcher = dispatch::SubAgentDispatcher::new(db);
+    let result = dispatcher
+        .dispatch("sess_1", "node_b", "coding", envelope, driver)
+        .await
+        .unwrap();
+    assert_eq!(result.status, sub_task::SubTaskStatus::Failed);
+    let node = tree.get_node("node_b").unwrap().unwrap();
+    assert_eq!(node.status, TaskStatus::Failed);
+    assert!(node.error_summary.is_some());
+}
+
 // ── commands.json runner ────────────────────────────────────────────────
 
 #[test]

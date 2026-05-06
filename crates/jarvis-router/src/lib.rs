@@ -11,6 +11,7 @@
 
 pub mod agent_registry;
 pub mod intent;
+pub mod llm_judge;
 pub mod mention;
 pub mod router;
 pub mod session_resolver;
@@ -18,6 +19,7 @@ pub mod system_prompt;
 
 pub use agent_registry::*;
 pub use intent::*;
+pub use llm_judge::{JudgeInputs, JudgeOutcome, LlmJudge, RuleBasedJudge};
 pub use mention::*;
 pub use router::*;
 pub use session_resolver::*;
