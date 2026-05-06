@@ -397,6 +397,117 @@ async fn rule_based_judge_marks_clarification_when_hints_weak() {
     assert!(outcome.clarification_needed);
 }
 
+// ── Router with LLM judge integration ───────────────────────────────────
+
+#[tokio::test]
+async fn route_with_judge_uses_judge_when_more_confident() {
+    let db = fresh_db();
+    let router = Router::new(db);
+    // Custom judge that always returns very high confidence.
+    struct AlwaysConfident;
+    #[async_trait::async_trait]
+    impl llm_judge::LlmJudge for AlwaysConfident {
+        async fn judge(
+            &self,
+            _inputs: llm_judge::JudgeInputs<'_>,
+        ) -> Option<llm_judge::JudgeOutcome> {
+            Some(llm_judge::JudgeOutcome {
+                primary_intent: "research.web_search".into(),
+                secondary_intents: vec![],
+                domain: "research".into(),
+                topic: "判官接管".into(),
+                session_action: jarvis_core::route::SessionAction::CreateNew,
+                agent_type: "research".into(),
+                confidence: 0.99,
+                clarification_needed: false,
+                router_notes: "judge ran".into(),
+            })
+        }
+    }
+    let (decision, _) = router
+        .route_with_judge(
+            RouterInput {
+                user_input: "openwrt 报错",
+                session_id_hint: None,
+                running_agent_types: &[],
+            },
+            &AlwaysConfident,
+        )
+        .await
+        .unwrap();
+    assert_eq!(decision.agent_type, "research");
+    assert!(decision.router_notes.contains("judge ran"));
+    assert!(!decision.fallback_used);
+}
+
+#[tokio::test]
+async fn route_with_judge_marks_fallback_when_judge_returns_none() {
+    let db = fresh_db();
+    let router = Router::new(db);
+    struct NeverAvailable;
+    #[async_trait::async_trait]
+    impl llm_judge::LlmJudge for NeverAvailable {
+        async fn judge(
+            &self,
+            _inputs: llm_judge::JudgeInputs<'_>,
+        ) -> Option<llm_judge::JudgeOutcome> {
+            None
+        }
+    }
+    let (decision, _) = router
+        .route_with_judge(
+            RouterInput {
+                user_input: "openwrt 报错",
+                session_id_hint: None,
+                running_agent_types: &[],
+            },
+            &NeverAvailable,
+        )
+        .await
+        .unwrap();
+    assert!(decision.fallback_used);
+}
+
+#[tokio::test]
+async fn route_with_judge_respects_mention_override() {
+    let db = fresh_db();
+    let router = Router::new(db);
+    struct AlwaysConfident;
+    #[async_trait::async_trait]
+    impl llm_judge::LlmJudge for AlwaysConfident {
+        async fn judge(
+            &self,
+            _inputs: llm_judge::JudgeInputs<'_>,
+        ) -> Option<llm_judge::JudgeOutcome> {
+            Some(llm_judge::JudgeOutcome {
+                primary_intent: "research.web_search".into(),
+                secondary_intents: vec![],
+                domain: "research".into(),
+                topic: "x".into(),
+                session_action: jarvis_core::route::SessionAction::CreateNew,
+                agent_type: "research".into(),
+                confidence: 0.99,
+                clarification_needed: false,
+                router_notes: "judge ran".into(),
+            })
+        }
+    }
+    // The user explicitly @ specifies coding — judge should NOT override.
+    let (decision, _) = router
+        .route_with_judge(
+            RouterInput {
+                user_input: "@代码助手 帮我重构这个",
+                session_id_hint: None,
+                running_agent_types: &[],
+            },
+            &AlwaysConfident,
+        )
+        .await
+        .unwrap();
+    assert_eq!(decision.agent_type, "coding");
+    assert!(decision.mention_override);
+}
+
 // ── system prompt assembler ─────────────────────────────────────────────
 
 #[test]

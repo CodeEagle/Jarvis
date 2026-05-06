@@ -11,6 +11,7 @@ pub mod checkpoint;
 pub mod commands;
 pub mod conversation_bus;
 pub mod dispatch;
+pub mod interrupt;
 pub mod regression;
 pub mod steer;
 pub mod sub_task;
@@ -30,6 +31,9 @@ pub use commands::{
 pub use conversation_bus::*;
 pub use dispatch::{
     failed_result, DriverHandle, InProcessDriver, SubAgentDispatcher, SubAgentDriver,
+};
+pub use interrupt::{
+    InterruptController, InterruptKind, InterruptOutcome, InterruptPolicy,
 };
 pub use steer::*;
 pub use sub_task::*;

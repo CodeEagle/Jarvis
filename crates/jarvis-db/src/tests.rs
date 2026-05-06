@@ -378,6 +378,86 @@ fn session_snapshot_blocks_update() {
 }
 
 #[test]
+fn provenance_replay_returns_baseline_and_subsequent_events() {
+    let db = fresh_db();
+    // baseline snapshot
+    let baseline = session_snapshot::append(
+        &db,
+        session_snapshot::SnapshotDraft {
+            session_id: "sess_p",
+            reason: "manual",
+            rolling_summary: Some("baseline"),
+            active_entities_json: None,
+            unresolved_json: None,
+            resolved_json: None,
+            task_tree_json: None,
+            artifact_index_json: None,
+        },
+    )
+    .unwrap();
+    raw_event_log::append(
+        &db,
+        raw_event_log::AppendEvent {
+            event_type: RawEventKind::UserMessage,
+            session_id: Some("sess_p"),
+            trace_id: Some("trc_p"),
+            agent_id: None,
+            raw_content: "hi",
+            safe_content: None,
+        },
+    )
+    .unwrap();
+    raw_event_log::append(
+        &db,
+        raw_event_log::AppendEvent {
+            event_type: RawEventKind::AgentMessage,
+            session_id: Some("sess_p"),
+            trace_id: Some("trc_p"),
+            agent_id: None,
+            raw_content: "hello",
+            safe_content: None,
+        },
+    )
+    .unwrap();
+    let window = provenance::replay_session_at(&db, "sess_p", chrono::Utc::now())
+        .unwrap();
+    assert_eq!(window.baseline.unwrap().id, baseline.id);
+    assert_eq!(window.events.len(), 2);
+}
+
+#[test]
+fn provenance_trace_events_returns_in_order() {
+    let db = fresh_db();
+    raw_event_log::append(
+        &db,
+        raw_event_log::AppendEvent {
+            event_type: RawEventKind::UserMessage,
+            session_id: Some("sess_t"),
+            trace_id: Some("trc_t"),
+            agent_id: None,
+            raw_content: "first",
+            safe_content: None,
+        },
+    )
+    .unwrap();
+    raw_event_log::append(
+        &db,
+        raw_event_log::AppendEvent {
+            event_type: RawEventKind::ToolCall,
+            session_id: Some("sess_t"),
+            trace_id: Some("trc_t"),
+            agent_id: None,
+            raw_content: "tool",
+            safe_content: None,
+        },
+    )
+    .unwrap();
+    let events = provenance::trace_events(&db, "trc_t").unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events[0].seq < events[1].seq);
+}
+
+#[test]
 fn list_recent_returns_only_active_sessions() {
     let db = fresh_db();
     let mut a = sample_session("sess_a");

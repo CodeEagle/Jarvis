@@ -17,6 +17,7 @@ pub mod memory_change_log;
 pub mod memory_repo;
 pub mod mention_log;
 pub mod migrations;
+pub mod provenance;
 pub mod raw_event_log;
 pub mod session_repo;
 pub mod session_snapshot;

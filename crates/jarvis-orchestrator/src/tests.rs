@@ -879,6 +879,75 @@ fn regression_skips_unapproved_walkthrough() {
     assert_eq!(report.items.len(), 0);
 }
 
+// ── interrupt protocol (Section 30.2.3) ─────────────────────────────────
+
+#[test]
+fn soft_interrupt_acks_then_acknowledge_clears_pending() {
+    let db = Db::in_memory().unwrap();
+    let ctrl = interrupt::InterruptController::new(db);
+    let outcome = ctrl.soft("sess_1", "st_1", None).unwrap();
+    assert_eq!(outcome, interrupt::InterruptOutcome::SoftAcked);
+
+    let completed = vec!["step1".to_string()];
+    let pinned: Vec<String> = vec![];
+    let arts: Vec<String> = vec![];
+    ctrl.acknowledge_soft(
+        "st_1",
+        checkpoint::CheckpointDraft {
+            sub_task_id: "st_1",
+            agent_id: None,
+            completed_steps: &completed,
+            working_set_snapshot: "snap",
+            pinned_findings: &pinned,
+            artifact_ids_so_far: &arts,
+            resume_hint: "from step2",
+        },
+    )
+    .unwrap();
+    let escalated = ctrl.evaluate_pending("sess_1", |_| None).unwrap();
+    assert!(escalated.is_empty());
+}
+
+#[test]
+fn soft_interrupt_escalates_after_timeout() {
+    let db = Db::in_memory().unwrap();
+    let ctrl = interrupt::InterruptController::with_policy(
+        db,
+        interrupt::InterruptPolicy {
+            soft_grace: std::time::Duration::from_millis(0),
+            soft_escalation_timeout: std::time::Duration::from_millis(0),
+        },
+    );
+    ctrl.soft("sess_1", "st_x", None).unwrap();
+    let escalated = ctrl.evaluate_pending("sess_1", |_| None).unwrap();
+    assert_eq!(escalated.len(), 1);
+    assert_eq!(escalated[0].1, interrupt::InterruptOutcome::EscalatedToHard);
+}
+
+#[test]
+fn hard_interrupt_closes_active_subchannel() {
+    let db = Db::in_memory().unwrap();
+    let bus = ConversationBus::new(db.clone());
+    bus.open_sub_channel("sess_1", "st_h", "coding", None).unwrap();
+    let ctrl = interrupt::InterruptController::new(db.clone());
+    let outcome = ctrl.hard("sess_1", "st_h", None).unwrap();
+    assert_eq!(outcome, interrupt::InterruptOutcome::HardApplied);
+    let active = bus.list_active_sub_channels("sess_1").unwrap();
+    assert!(active.iter().all(|c| c.sub_task_id != "st_h"));
+}
+
+#[test]
+fn async_tag_marks_channel_suspended() {
+    let db = Db::in_memory().unwrap();
+    let bus = ConversationBus::new(db.clone());
+    bus.open_sub_channel("sess_1", "st_a", "research", None).unwrap();
+    let ctrl = interrupt::InterruptController::new(db.clone());
+    ctrl.async_tag("sess_1", "st_a").unwrap();
+    let active = bus.list_active_sub_channels("sess_1").unwrap();
+    let target = active.iter().find(|c| c.sub_task_id == "st_a").unwrap();
+    assert_eq!(target.status, SubChannelStatus::Suspended);
+}
+
 // ── sub-agent dispatcher (in-process) ───────────────────────────────────
 
 #[tokio::test]

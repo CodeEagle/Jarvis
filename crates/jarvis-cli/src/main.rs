@@ -62,6 +62,8 @@ async fn main() -> anyhow::Result<()> {
         Some("memory") => memory_command(db, &args[2..])?,
         Some("raw-log") => raw_log_command(db, &args[2..])?,
         Some("growth") => growth_command(db, &args[2..])?,
+        Some("trace") => trace_command(db, &args[2..])?,
+        Some("replay") => replay_command(db, &args[2..])?,
         _ => {
             print_usage();
         }
@@ -239,19 +241,69 @@ fn growth_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn trace_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+    let trace_id = args.first().cloned().unwrap_or_default();
+    anyhow::ensure!(!trace_id.is_empty(), "trace requires <trace_id>");
+    let events = jarvis_db::provenance::trace_events(&db, &trace_id)?;
+    for e in events {
+        println!(
+            "{:>5} {} [{}] {}",
+            e.seq,
+            e.ts.to_rfc3339(),
+            e.event_type,
+            e.raw_content
+        );
+    }
+    Ok(())
+}
+
+fn replay_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+    let session_id = args.first().cloned().unwrap_or_default();
+    anyhow::ensure!(!session_id.is_empty(), "replay requires <session_id>");
+    let at = match args.get(1) {
+        Some(s) => chrono::DateTime::parse_from_rfc3339(s)
+            .map(|d| d.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+        None => chrono::Utc::now(),
+    };
+    let window = jarvis_db::provenance::replay_session_at(&db, &session_id, at)?;
+    if let Some(b) = window.baseline {
+        println!(
+            "baseline seq={} reason={} captured_at={}",
+            b.seq,
+            b.snapshot_reason,
+            b.created_at.to_rfc3339()
+        );
+    } else {
+        println!("baseline: (none)");
+    }
+    for e in window.events {
+        println!(
+            "{:>5} {} [{}] {}",
+            e.seq,
+            e.ts.to_rfc3339(),
+            e.event_type,
+            e.raw_content
+        );
+    }
+    Ok(())
+}
+
 fn print_usage() {
-    println!("Jarvis v0.2 CLI
+    println!("Jarvis v0.4 CLI
 
 Commands:
-  jarvis route <input>          run Router and print decision
-  jarvis chat                   interactive REPL
-  jarvis memory write <text>    record a user-explicit memory
-  jarvis memory list            list memories
-  jarvis raw-log <session_id>   dump raw_event_log
-  jarvis growth events [type]   list growth events
-  jarvis growth artifacts       list growth artifacts
+  jarvis route <input>            run Router and print decision
+  jarvis chat                     interactive REPL
+  jarvis memory write <text>      record a user-explicit memory
+  jarvis memory list              list memories
+  jarvis raw-log <session_id>     dump raw_event_log
+  jarvis growth events [type]     list growth events
+  jarvis growth artifacts         list growth artifacts
+  jarvis trace <trace_id>         dump every raw event for a trace
+  jarvis replay <session> [iso]   point-in-time replay (default: now)
 
 Env:
-  JARVIS_DB                     path to sqlite file (default: ./jarvis.db)
+  JARVIS_DB                       path to sqlite file (default: ./jarvis.db)
 ");
 }

@@ -66,6 +66,65 @@ impl Router {
         &self.growth
     }
 
+    /// Async route through an `LlmJudge`. The judge's outcome is taken
+    /// when its `confidence` outranks the rule layer's; otherwise the
+    /// decision falls through to the rule-only path. A `None` from the
+    /// judge (timeout, unavailable, …) is treated as a degraded
+    /// fallback per Section 5.5: we proceed with the rule-only result
+    /// and set `fallback_used = true`.
+    pub async fn route_with_judge<J: crate::llm_judge::LlmJudge>(
+        &self,
+        input: RouterInput<'_>,
+        judge: &J,
+    ) -> jarvis_db::error::DbResult<(RouteDecision, RouterDiagnostics)> {
+        let (mut decision, diag) = self.route(input.clone())?;
+        let allowed: Vec<String> = self
+            .registry
+            .iter()
+            .filter(|a| a.can_be_sub_agent || a.can_be_orchestrator)
+            .map(|a| a.r#type.clone())
+            .collect();
+        let recent_titles: Vec<String> = jarvis_db::session_repo::list_recent(&self.db, 5)
+            .map(|rs| rs.into_iter().map(|s| s.title).collect())
+            .unwrap_or_default();
+        let llm = judge
+            .judge(crate::llm_judge::JudgeInputs {
+                user_input: input.user_input,
+                trace_id: &decision.trace_id,
+                task_id: &decision.task_id,
+                rule_hints: &diag.rule_hints,
+                recent_session_titles: &recent_titles,
+                allowed_agents: &allowed,
+            })
+            .await;
+        match llm {
+            Some(out) if out.confidence > decision.confidence && !decision.mention_override => {
+                decision.primary_intent = out.primary_intent;
+                decision.secondary_intents = out.secondary_intents;
+                decision.domain = out.domain;
+                decision.topic = out.topic;
+                // Don't override session_action when explicit_reference fired.
+                if !diag.had_explicit_reference {
+                    decision.session_action = out.session_action;
+                }
+                decision.agent_type = out.agent_type.clone();
+                decision.confidence = out.confidence;
+                decision.clarification_needed = out.clarification_needed;
+                decision.router_notes = format!(
+                    "{} | judge: {}",
+                    decision.router_notes, out.router_notes
+                );
+            }
+            None => {
+                decision.fallback_used = true;
+                decision.router_notes =
+                    format!("{} | judge unavailable, rule-only fallback", decision.router_notes);
+            }
+            _ => {}
+        }
+        Ok((decision, diag))
+    }
+
     /// Route a user input.
     ///
     /// CRITICAL invariant (Section 23.1): the user input is written to
