@@ -20,11 +20,13 @@ use jarvis_db::Db;
 use rusqlite::params;
 
 use crate::trust;
+use crate::vectors::VectorStore;
 
 #[derive(Debug, Clone)]
 pub struct RetrievedMemory {
     pub memory: Memory,
     pub fts: f32,
+    pub vector: f32,
     pub jaccard: f32,
     pub trust_now: f32,
     pub emotion_bonus: f32,
@@ -57,9 +59,34 @@ impl Retrieval {
         top_k: usize,
         min_score: f32,
     ) -> DbResult<Vec<RetrievedMemory>> {
+        self.retrieve_with_vectors(scope, query, emotion, top_k, min_score, None, &[])
+    }
+
+    /// Same as `retrieve` but also consults the supplied VectorStore.
+    /// `query_embedding` is the embedded query the caller computed
+    /// (typically by passing `query` through an `EmbeddingProvider`).
+    /// Empty `query_embedding` disables the vector path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn retrieve_with_vectors(
+        &self,
+        scope: &str,
+        query: &str,
+        emotion: Option<EmotionContext>,
+        top_k: usize,
+        min_score: f32,
+        store: Option<&VectorStore>,
+        query_embedding: &[f32],
+    ) -> DbResult<Vec<RetrievedMemory>> {
         let memories = memory_repo::list_by_scope(&self.db, scope, 1024)?;
         let query_tokens = tokenize(query);
         let fts_scores = self.fts_scores(query)?;
+        let vec_scores: HashMap<String, f32> = match (store, query_embedding) {
+            (Some(s), q) if !q.is_empty() => s
+                .search(q, 200, 0.0)
+                .into_iter()
+                .collect(),
+            _ => HashMap::new(),
+        };
 
         let now_ts = now();
         let mut scored: Vec<RetrievedMemory> = memories
@@ -69,14 +96,17 @@ impl Retrieval {
                 let mem_tokens = tokenize(&m.content);
                 let jaccard = jaccard_similarity(&query_tokens, &mem_tokens);
                 let fts = *fts_scores.get(&m.id).unwrap_or(&0.0);
+                let vector = vec_scores.get(&m.id).copied().unwrap_or(0.0).max(0.0);
                 let trust_now = trust::compute(&m, now_ts);
                 let emotion_bonus = emotion
                     .map(|e| emotion_resonance_bonus(e, m.emotion_energy, m.emotion_polarity))
                     .unwrap_or(0.0);
-                let hybrid_score = hybrid_score(fts, jaccard, trust_now, emotion_bonus);
+                let hybrid_score =
+                    hybrid_score_full(fts, vector, jaccard, trust_now, emotion_bonus);
                 RetrievedMemory {
                     memory: m,
                     fts,
+                    vector,
                     jaccard,
                     trust_now,
                     emotion_bonus,
@@ -163,18 +193,30 @@ fn sanitize_fts_query(query: &str) -> String {
     trimmed
 }
 
-/// Hybrid score (Section 13.1).
+/// Backwards-compatible 2-path hybrid (no vector). New callers should
+/// prefer `hybrid_score_full`.
+pub fn hybrid_score(fts: f32, jaccard: f32, trust: f32, emotion_bonus: f32) -> f32 {
+    hybrid_score_full(fts, 0.0, jaccard, trust, emotion_bonus)
+}
+
+/// Three-path hybrid (Section 13.1):
 ///
 /// ```text
-/// raw  = fts * w_fts + jaccard * w_jaccard
+/// raw   = fts * 0.35 + vector * 0.40 + jaccard * 0.15
 /// score = raw * (0.7 + trust * 0.3) + emotion_bonus
 /// ```
 ///
-/// With FTS5 + Jaccard wired we reweight to (0.55, 0.20). The unused
-/// vector slot (0.40 in the spec) folds into FTS to keep results
-/// well-spread until sqlite-vec lands.
-pub fn hybrid_score(fts: f32, jaccard: f32, trust: f32, emotion_bonus: f32) -> f32 {
-    let raw = fts * 0.55 + jaccard * 0.20;
+/// When `vector == 0.0` (no embedding available), the FTS weight
+/// effectively absorbs the missing leg and the score collapses
+/// gracefully to the 2-path form.
+pub fn hybrid_score_full(
+    fts: f32,
+    vector: f32,
+    jaccard: f32,
+    trust: f32,
+    emotion_bonus: f32,
+) -> f32 {
+    let raw = fts * 0.35 + vector * 0.40 + jaccard * 0.15;
     raw * (0.7 + trust * 0.3) + emotion_bonus
 }
 

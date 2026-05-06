@@ -79,6 +79,9 @@ async fn handle(
         (Method::GET, "/growth/events") => handlers::growth_events(&state.db),
         (Method::GET, "/growth/artifacts") => handlers::growth_artifacts(&state.db),
         (Method::POST, "/memory") => write_memory(&state, req).await,
+        (Method::POST, "/steer") => post_steer(&state, req).await,
+        (Method::POST, "/interrupt") => post_interrupt(&state, req).await,
+        (Method::POST, "/maintenance/lint") => post_maintenance_lint(&state, req).await,
         (Method::GET, p) if p.starts_with("/sessions/") => {
             handlers::get_session(&state.db, &p["/sessions/".len()..])
         }
@@ -209,6 +212,111 @@ async fn write_memory(
         "id": outcome.id,
         "status": format!("{:?}", outcome.status),
         "trust_score": outcome.trust_score,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct SteerBody {
+    session_id: String,
+    sub_task_id: String,
+    content: String,
+    #[serde(default = "default_steer_scope")]
+    scope: String,
+    #[serde(default = "default_inject_at")]
+    inject_at: String,
+}
+
+fn default_steer_scope() -> String {
+    "constraint".into()
+}
+
+fn default_inject_at() -> String {
+    "next_step".into()
+}
+
+async fn post_steer(
+    state: &Arc<ApiState>,
+    req: Request<Incoming>,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let body = read_json::<SteerBody>(req).await?;
+    let scope = match body.scope.as_str() {
+        "direction" => jarvis_orchestrator::steer::SteerScope::Direction,
+        "priority" => jarvis_orchestrator::steer::SteerScope::Priority,
+        _ => jarvis_orchestrator::steer::SteerScope::Constraint,
+    };
+    let inject_at = match body.inject_at.as_str() {
+        "next_tool_call" => jarvis_orchestrator::steer::InjectAt::NextToolCall,
+        "next_checkpoint" => jarvis_orchestrator::steer::InjectAt::NextCheckpoint,
+        _ => jarvis_orchestrator::steer::InjectAt::NextStep,
+    };
+    let ctrl = jarvis_orchestrator::steer::SteerController::new(state.db.clone());
+    let outcome = ctrl
+        .enqueue(jarvis_orchestrator::steer::EnqueueRequest {
+            session_id: &body.session_id,
+            sub_task_id: &body.sub_task_id,
+            trace_id: None,
+            content: &body.content,
+            scope,
+            inject_at,
+        })
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let payload = match outcome {
+        jarvis_orchestrator::steer::SteerEnqueueOutcome::Accepted(s) => {
+            serde_json::json!({"status":"accepted","id": s.id})
+        }
+        jarvis_orchestrator::steer::SteerEnqueueOutcome::RateLimited { recent_count } => {
+            serde_json::json!({"status":"rate_limited","recent_count": recent_count})
+        }
+    };
+    Ok(json_ok(&payload))
+}
+
+#[derive(Debug, Deserialize)]
+struct InterruptBody {
+    session_id: String,
+    sub_task_id: String,
+    /// "soft" / "hard" / "async"
+    kind: String,
+    /// Optional task node id for status update.
+    node_id: Option<String>,
+}
+
+async fn post_interrupt(
+    state: &Arc<ApiState>,
+    req: Request<Incoming>,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let body = read_json::<InterruptBody>(req).await?;
+    let ctrl = jarvis_orchestrator::interrupt::InterruptController::new(state.db.clone());
+    let outcome = match body.kind.as_str() {
+        "soft" => ctrl.soft(&body.session_id, &body.sub_task_id, body.node_id.as_deref()),
+        "hard" => ctrl.hard(&body.session_id, &body.sub_task_id, body.node_id.as_deref()),
+        "async" => ctrl.async_tag(&body.session_id, &body.sub_task_id),
+        other => return Err(ApiError::BadRequest(format!("unknown kind: {other}"))),
+    }
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let payload = serde_json::json!({"outcome": format!("{outcome:?}")});
+    Ok(json_ok(&payload))
+}
+
+#[derive(Debug, Deserialize)]
+struct MaintenanceBody {
+    #[serde(default = "default_scope")]
+    scope: String,
+}
+
+async fn post_maintenance_lint(
+    state: &Arc<ApiState>,
+    req: Request<Incoming>,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let body = read_json::<MaintenanceBody>(req).await?;
+    let lint = jarvis_memory::lint::MemoryLint::new(state.db.clone());
+    let report = lint.run(&body.scope).map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&serde_json::json!({
+        "duplicates_deprecated": report.duplicates_deprecated,
+        "scratch_purged": report.scratch_purged,
+        "inferences_expired": report.inferences_expired,
+        "weak_lessons_demoted": report.weak_lessons_demoted,
+        "conflicts_dampened": report.conflicts_dampened,
     })))
 }
 

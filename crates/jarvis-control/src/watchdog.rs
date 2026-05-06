@@ -1,7 +1,7 @@
 //! Sub-agent watchdog. Section 9.10.4.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy)]
@@ -87,10 +87,57 @@ impl Watchdog {
         }
     }
 
-    pub fn forget(&self, agent_id: &str) {
+    pub fn forget_agent(&self, agent_id: &str) {
         self.agents
             .lock()
             .expect("watchdog lock")
             .remove(agent_id);
+    }
+
+    pub fn forget(&self, agent_id: &str) {
+        self.forget_agent(agent_id);
+    }
+
+    /// Sweep all currently-tracked agents at `now` and return the
+    /// list of agents whose verdict is `Stale` or `Dead`. The
+    /// verdict map mutates internal state (stale_since), so calling
+    /// this is the canonical "tick" the scheduler should run.
+    pub fn into_heartbeat(self: Arc<Self>) -> WatchdogHeartbeat {
+        WatchdogHeartbeat { inner: self }
+    }
+
+    pub fn sweep(&self, now: Instant) -> Vec<(String, WatchdogVerdict)> {
+        let ids: Vec<String> = self
+            .agents
+            .lock()
+            .expect("watchdog lock")
+            .keys()
+            .cloned()
+            .collect();
+        let mut out = Vec::new();
+        for id in ids {
+            let v = self.evaluate(&id, now);
+            if !matches!(v, WatchdogVerdict::Healthy) {
+                out.push((id, v));
+            }
+        }
+        out
+    }
+}
+
+/// Adapter implementing `jarvis_orchestrator::dispatch::Heartbeat` so
+/// the orchestrator dispatcher can pulse this Watchdog without taking
+/// a hard dependency on the Watchdog type.
+#[derive(Clone)]
+pub struct WatchdogHeartbeat {
+    inner: Arc<Watchdog>,
+}
+
+impl jarvis_orchestrator::dispatch::Heartbeat for WatchdogHeartbeat {
+    fn beat(&self, agent_id: &str) {
+        self.inner.beat(agent_id);
+    }
+    fn forget(&self, agent_id: &str) {
+        self.inner.forget_agent(agent_id);
     }
 }

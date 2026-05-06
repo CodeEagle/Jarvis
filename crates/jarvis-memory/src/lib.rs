@@ -13,6 +13,7 @@ pub mod manager;
 pub mod persona;
 pub mod retrieval;
 pub mod trust;
+pub mod vectors;
 
 pub use cold_start::{ColdStartSnapshot, ColdStartStore, SnapshotInputs};
 pub use dream::{
@@ -21,6 +22,7 @@ pub use dream::{
 };
 pub use lint::{LintReport, MemoryLint};
 pub use persona::{Persona, PersonaLayer};
+pub use vectors::{cosine_similarity, EmbeddingProvider, HashingEmbedder, VectorStore};
 
 pub use compression::*;
 pub use manager::{MemoryManager, WriteOutcome};

@@ -383,6 +383,70 @@ fn turn_summary_writes_and_lists() {
     assert_eq!(listed[0].user_goal, "fix DNS");
 }
 
+// ── vector store + 3-path hybrid ────────────────────────────────────────
+
+#[tokio::test]
+async fn hashing_embedder_normalises_to_unit_length() {
+    let embedder = vectors::HashingEmbedder::new(16);
+    let v = embedder.embed("openwrt dns").await.unwrap();
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    assert!((norm - 1.0).abs() < 1e-3);
+}
+
+#[tokio::test]
+async fn vector_store_finds_nearest_neighbour() {
+    let embedder = vectors::HashingEmbedder::new(64);
+    let store = vectors::VectorStore::new();
+    store.insert(
+        "m_openwrt".to_string(),
+        embedder.embed("openwrt dns hosts").await.unwrap(),
+    );
+    store.insert(
+        "m_react".to_string(),
+        embedder.embed("react component design").await.unwrap(),
+    );
+    let q = embedder.embed("openwrt").await.unwrap();
+    let hits = store.search(&q, 5, 0.0);
+    assert_eq!(hits[0].0, "m_openwrt");
+}
+
+#[tokio::test]
+async fn retrieve_with_vectors_uses_third_path() {
+    let mgr = fresh_manager();
+    let id1 = write_memory(&mgr, "openwrt dns hosts", MemoryType::PreferenceMemory);
+    let _id2 = write_memory(&mgr, "react component design", MemoryType::PreferenceMemory);
+
+    let embedder = vectors::HashingEmbedder::new(64);
+    let store = vectors::VectorStore::new();
+    let m1 = jarvis_db::memory_repo::get(mgr.db(), &id1).unwrap().unwrap();
+    store.insert(m1.id.clone(), embedder.embed(&m1.content).await.unwrap());
+
+    let r = retrieval::Retrieval::new(mgr.db().clone());
+    let q_embed = embedder.embed("openwrt").await.unwrap();
+    let hits = r
+        .retrieve_with_vectors(
+            "global",
+            "openwrt",
+            None,
+            5,
+            0.0,
+            Some(&store),
+            &q_embed,
+        )
+        .unwrap();
+    assert!(!hits.is_empty());
+    assert!(hits[0].vector > 0.0);
+    assert_eq!(hits[0].memory.id, id1);
+}
+
+#[test]
+fn hybrid_score_full_uses_three_path_weights() {
+    use retrieval::hybrid_score_full;
+    let s = hybrid_score_full(0.8, 0.6, 0.4, 0.5, 0.0);
+    let expected = (0.8 * 0.35 + 0.6 * 0.40 + 0.4 * 0.15) * (0.7 + 0.5 * 0.3);
+    assert!((s - expected).abs() < 1e-5);
+}
+
 // ── cold-start snapshot ─────────────────────────────────────────────────
 
 #[test]

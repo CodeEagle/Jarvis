@@ -21,6 +21,22 @@ use crate::conversation_bus::{ConversationBus, SubChannelStatus};
 use crate::sub_task::{Escalation, SubTaskEnvelope, SubTaskResult, SubTaskStatus};
 use crate::task_tree::TaskTreeStore;
 
+/// A heartbeat sink the dispatcher pings while a sub-agent is
+/// executing. Concrete implementations come from `jarvis-control`'s
+/// Watchdog (and are pluggable so this crate stays free of any
+/// runtime concerns).
+pub trait Heartbeat: Send + Sync {
+    fn beat(&self, agent_id: &str);
+    fn forget(&self, agent_id: &str);
+}
+
+/// No-op heartbeat — used by callers that don't care.
+pub struct NoopHeartbeat;
+impl Heartbeat for NoopHeartbeat {
+    fn beat(&self, _agent_id: &str) {}
+    fn forget(&self, _agent_id: &str) {}
+}
+
 /// Pluggable execution backend. Implementors return a SubTaskResult
 /// per envelope. `Send` + `Sync` because the Orchestrator may dispatch
 /// in parallel.
@@ -31,6 +47,7 @@ pub trait SubAgentDriver: Send + Sync {
 }
 
 pub type DriverHandle = Arc<dyn SubAgentDriver>;
+pub type HeartbeatHandle = Arc<dyn Heartbeat>;
 
 /// In-process closure-driven driver.
 ///
@@ -106,7 +123,7 @@ impl SubAgentDispatcher {
     /// Run an envelope through `driver` and persist the lifecycle:
     /// 1. open SubChannel
     /// 2. mark TaskNode running (caller pre-creates the node)
-    /// 3. driver.execute
+    /// 3. driver.execute (with optional heartbeat sink)
     /// 4. mark SubChannel done + TaskNode success/failed
     pub async fn dispatch(
         &self,
@@ -115,6 +132,29 @@ impl SubAgentDispatcher {
         agent_type: &str,
         envelope: SubTaskEnvelope,
         driver: DriverHandle,
+    ) -> DbResult<SubTaskResult> {
+        self.dispatch_with_heartbeat(
+            session_id,
+            node_id,
+            agent_type,
+            envelope,
+            driver,
+            Arc::new(NoopHeartbeat),
+        )
+        .await
+    }
+
+    /// Same as `dispatch`, but pulses `heartbeat` every 5s while the
+    /// driver is running. The Watchdog's stale → dead state machine
+    /// can then identify wedged drivers.
+    pub async fn dispatch_with_heartbeat(
+        &self,
+        session_id: &str,
+        node_id: &str,
+        agent_type: &str,
+        envelope: SubTaskEnvelope,
+        driver: DriverHandle,
+        heartbeat: HeartbeatHandle,
     ) -> DbResult<SubTaskResult> {
         let channel = self.bus.open_sub_channel(
             session_id,
@@ -133,8 +173,25 @@ impl SubAgentDispatcher {
 
         // Drive — clone envelope id since we'll need it on failure.
         let sub_task_id = envelope.sub_task_id.clone();
-        let _agent_id = new_agent_id();
+        let agent_id = new_agent_id();
+        heartbeat.beat(&agent_id);
+        let beat_handle = {
+            let hb = heartbeat.clone();
+            let id = agent_id.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                tick.set_missed_tick_behavior(
+                    tokio::time::MissedTickBehavior::Delay,
+                );
+                loop {
+                    tick.tick().await;
+                    hb.beat(&id);
+                }
+            })
+        };
         let result = driver.execute(envelope).await;
+        beat_handle.abort();
+        heartbeat.forget(&agent_id);
 
         // Update task tree based on outcome.
         let status = match result.status {

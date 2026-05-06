@@ -10,6 +10,7 @@ members = [
     "crates/jarvis-orchestrator",
     "crates/jarvis-control",
     "crates/jarvis-api",
+    "crates/jarvis-anthropic",
     "crates/jarvis-cli",
 ]
 
@@ -39,6 +40,7 @@ hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 jarvis-core         = { path = "crates/jarvis-core" }
 jarvis-db           = { path = "crates/jarvis-db" }
@@ -49,6 +51,7 @@ jarvis-growth       = { path = "crates/jarvis-growth" }
 jarvis-orchestrator = { path = "crates/jarvis-orchestrator" }
 jarvis-control      = { path = "crates/jarvis-control" }
 jarvis-api          = { path = "crates/jarvis-api" }
+jarvis-anthropic    = { path = "crates/jarvis-anthropic" }
 
 [profile.release]
 lto = "thin"

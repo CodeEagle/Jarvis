@@ -72,7 +72,7 @@ crates/
                         growth / trace / replay / audit / maintenance / serve
 ```
 
-**223 unit tests pass** across the workspace.
+**232 unit tests pass** across the workspace.
 
 ---
 
@@ -142,22 +142,21 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 
 ```
 jarvis-core         13 tests
-jarvis-db           24 tests   (+3: audit log round-trip + immutability
-                               + filtering by session/actor)
-jarvis-memory       36 tests
-jarvis-tools        10 tests   (+2: tool calls write audit_log entries
-                               with correct AuditStatus)
+jarvis-db           24 tests
+jarvis-memory       40 tests   (+4: HashingEmbedder normalisation,
+                               VectorStore nearest-neighbour, retrieval
+                               with 3rd path, hybrid_score_full weights)
+jarvis-tools        10 tests
 jarvis-growth       21 tests
-jarvis-orchestrator 64 tests   (+3: worker-process driver success +
-                               nonzero exit + timeout)
-jarvis-router       38 tests   (+2: cold-start captured / skipped)
-jarvis-control      11 tests   (+2: maintenance jobs lint synchronously,
-                               scheduler config defaults)
-jarvis-api           6 tests   (NEW: healthz, recent sessions, missing
-                               session 404, empty memories, audit array,
-                               end-to-end TCP serve)
+jarvis-orchestrator 64 tests
+jarvis-router       38 tests
+jarvis-control      11 tests
+jarvis-api           6 tests
+jarvis-anthropic     5 tests   (NEW: well-formed response, 500 → None,
+                               garbage text → None, code-fenced JSON,
+                               cache_control header sent)
 ─────────────────
-TOTAL              223 tests
+TOTAL              232 tests
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,
