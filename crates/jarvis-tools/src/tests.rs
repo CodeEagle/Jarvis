@@ -238,6 +238,60 @@ async fn denied_call_records_denied_audit_status() {
     assert_eq!(entries[0].status, jarvis_db::audit_log::AuditStatus::Denied);
 }
 
+// ── sandbox spec ───────────────────────────────────────────────────────
+
+#[test]
+fn sandbox_default_denies_everything() {
+    let s = sandbox::SandboxSpec::deny_all();
+    let err = s.validate("ls", &[], None).unwrap_err();
+    assert_eq!(err, sandbox::SandboxDenial::ProgramNotAllowed("ls".into()));
+}
+
+#[test]
+fn sandbox_allow_program_lets_it_through() {
+    let s = sandbox::SandboxSpec::deny_all().allow_program("ls");
+    s.validate("ls", &["-la".into()], None).unwrap();
+}
+
+#[test]
+fn sandbox_rejects_forbidden_pattern_in_args() {
+    let s = sandbox::SandboxSpec::deny_all().allow_program("sh");
+    let err = s
+        .validate("sh", &["-c".into(), "rm -rf / yolo".into()], None)
+        .unwrap_err();
+    matches!(err, sandbox::SandboxDenial::ForbiddenPattern(_))
+        .then_some(())
+        .expect("expected ForbiddenPattern");
+}
+
+#[test]
+fn sandbox_args_too_long_denied() {
+    let s = sandbox::SandboxSpec {
+        allowed_programs: vec!["sh".into()],
+        forbidden_patterns: vec![],
+        max_args_length: Some(8),
+        allowed_cwds: vec![],
+    };
+    let err = s
+        .validate("sh", &["-c".into(), "echo hellooooo world".into()], None)
+        .unwrap_err();
+    matches!(err, sandbox::SandboxDenial::ArgsTooLong(_, _))
+        .then_some(())
+        .expect("expected ArgsTooLong");
+}
+
+#[test]
+fn sandbox_cwd_must_be_allowed_when_restricted() {
+    let s = sandbox::SandboxSpec::deny_all()
+        .allow_program("ls")
+        .allow_cwd("/tmp/jarvis");
+    let err = s.validate("ls", &[], Some("/etc")).unwrap_err();
+    matches!(err, sandbox::SandboxDenial::CwdNotAllowed(_))
+        .then_some(())
+        .expect("expected CwdNotAllowed");
+    s.validate("ls", &[], Some("/tmp/jarvis/sub")).unwrap();
+}
+
 // ── plugin registry (Section 24.5) ─────────────────────────────────────
 
 #[cfg(test)]

@@ -140,6 +140,25 @@ async fn session_messages_returns_chronological() {
 }
 
 #[tokio::test]
+async fn dashboard_metrics_returns_required_fields() {
+    let state = fresh_state();
+    let resp = handlers::dashboard_metrics(&state.db).unwrap();
+    let body = body_bytes(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    for field in [
+        "active_sessions",
+        "raw_event_count",
+        "memory_count",
+        "outbox_pending",
+        "route_decisions",
+        "promoted_artifacts",
+        "ts",
+    ] {
+        assert!(json.get(field).is_some(), "missing {field}: {json}");
+    }
+}
+
+#[tokio::test]
 async fn audit_returns_array() {
     let state = fresh_state();
     jarvis_db::audit_log::append(

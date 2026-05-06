@@ -377,6 +377,55 @@ fn session_snapshot_blocks_update() {
     assert!(format!("{err}").contains("immutable"));
 }
 
+// ── outbox (Section 24.5) ──────────────────────────────────────────────
+
+#[test]
+fn outbox_enqueue_and_drain() {
+    let db = fresh_db();
+    let _seq = outbox::enqueue(
+        &db,
+        outbox::EnqueueRequest {
+            kind: "memory.upserted",
+            target_table: "memories",
+            target_id: "mem_x",
+            payload_json: "{\"content\":\"hi\"}",
+        },
+    )
+    .unwrap();
+    assert_eq!(outbox::pending_count(&db).unwrap(), 1);
+    let pending = outbox::take_pending(&db, 10).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].target_id, "mem_x");
+    outbox::mark_delivered(&db, pending[0].seq).unwrap();
+    assert_eq!(outbox::pending_count(&db).unwrap(), 0);
+}
+
+#[test]
+fn outbox_seq_strictly_monotonic() {
+    let db = fresh_db();
+    let s1 = outbox::enqueue(
+        &db,
+        outbox::EnqueueRequest {
+            kind: "x",
+            target_table: "memories",
+            target_id: "a",
+            payload_json: "{}",
+        },
+    )
+    .unwrap();
+    let s2 = outbox::enqueue(
+        &db,
+        outbox::EnqueueRequest {
+            kind: "x",
+            target_table: "memories",
+            target_id: "b",
+            payload_json: "{}",
+        },
+    )
+    .unwrap();
+    assert!(s2 > s1);
+}
+
 // ── audit_log (Section 15.5) ───────────────────────────────────────────
 
 #[test]

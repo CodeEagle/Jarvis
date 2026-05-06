@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
         Some("memory-history") => memory_history_command(db, &args[2..])?,
         Some("serve") => serve_command(db, &args[2..]).await?,
         Some("maintenance") => maintenance_command(db, &args[2..]).await?,
+        Some("demo") => demo_command(db).await?,
         _ => {
             print_usage();
         }
@@ -363,6 +364,141 @@ fn memory_history_command(db: Db, args: &[String]) -> anyhow::Result<()> {
             h.reason.as_deref().unwrap_or(""),
         );
     }
+    Ok(())
+}
+
+async fn demo_command(db: Db) -> anyhow::Result<()> {
+    use jarvis_orchestrator as orch;
+    let session_id = "demo_session";
+    let n = jarvis_core::time::now();
+    jarvis_db::session_repo::upsert_session(
+        &db,
+        &jarvis_core::session::Session {
+            id: session_id.into(),
+            title: "Demo".into(),
+            domain: "coding".into(),
+            topic: "demo".into(),
+            summary: "demo session".into(),
+            long_summary: "demo run".into(),
+            active_entities: vec![],
+            unresolved: vec![],
+            resolved: vec![],
+            recent_message_ids: vec![],
+            memory_refs: vec![],
+            skill_refs: vec![],
+            status: jarvis_core::session::SessionStatus::Active,
+            created_at: n,
+            updated_at: n,
+            last_active_at: n,
+        },
+    )?;
+
+    println!("[demo] 1. Writing a user-explicit memory…");
+    let mgr = jarvis_memory::manager::MemoryManager::new(db.clone());
+    mgr.write(jarvis_memory::manager::WriteRequest {
+        r#type: jarvis_core::memory::MemoryType::PreferenceMemory,
+        scope: "global",
+        content: "用户偏好函数式编程",
+        entities: vec!["函数式".into()],
+        source_type: jarvis_core::memory::SourceType::UserExplicit,
+        source_trace_id: None,
+        tier: 1,
+        emotion_energy: 0.0,
+        emotion_polarity: jarvis_core::memory::EmotionPolarity::Neutral,
+        reason: Some("demo"),
+    })?;
+
+    println!("[demo] 2. Routing input through Router…");
+    let router = jarvis_router::Router::new(db.clone());
+    let (decision, _) = router.route(jarvis_router::RouterInput {
+        user_input: "openwrt dns 报错",
+        session_id_hint: Some(session_id),
+        running_agent_types: &[],
+    })?;
+    println!(
+        "         agent={} confidence={:.2}",
+        decision.agent_type, decision.confidence
+    );
+
+    println!("[demo] 3. Dispatching an in-process sub-task…");
+    let driver: orch::DriverHandle = std::sync::Arc::new(orch::InProcessDriver::new(
+        "demo",
+        |env| jarvis_orchestrator::sub_task::SubTaskResult {
+            sub_task_id: env.sub_task_id,
+            status: jarvis_orchestrator::sub_task::SubTaskStatus::Success,
+            summary: "demo done".into(),
+            artifact_ids: vec![],
+            escalation: None,
+            token_used: 1,
+            tool_calls_count: 0,
+            completed_at: chrono::Utc::now(),
+        },
+    ));
+    let envelope = jarvis_orchestrator::sub_task::SubTaskEnvelope {
+        sub_task_id: jarvis_core::ids::new_id_with_prefix("st"),
+        parent_task_id: "task_demo".into(),
+        trace_id: decision.trace_id.clone(),
+        title: "demo".into(),
+        instruction: "say hi".into(),
+        depends_on_results: vec![],
+        input_artifact_refs: vec![],
+        tool_scope: jarvis_core::tool::ToolScope::empty(),
+        output_spec: jarvis_orchestrator::sub_task::OutputSpec {
+            format: "text".into(),
+            max_tokens: 100,
+        },
+        constraints: jarvis_orchestrator::sub_task::SubTaskConstraints {
+            max_tool_calls: 0,
+            max_file_reads: 0,
+            token_budget: 100,
+            timeout_ms: 1000,
+        },
+        tentacle_path: None,
+    };
+    let pipeline = orch::OrchestrationPipeline::new(db.clone());
+    let builder: orch::WalkthroughBuilder = std::sync::Arc::new(|res| {
+        let mut doc = orch::walkthrough::new_draft(
+            &res.sub_task_id,
+            "_set_by_pipeline",
+            "coding",
+            "demo walkthrough",
+        );
+        doc.verification_status = orch::walkthrough::VerificationStatus::Verified;
+        doc.sections = vec![orch::walkthrough::new_section(
+            orch::walkthrough::SectionType::Summary,
+            "summary",
+            &res.summary,
+        )];
+        doc
+    });
+    let outcome = pipeline
+        .run_sub_task(session_id, "coding", envelope, driver, Some(builder))
+        .await?;
+    println!(
+        "         sub_task={:?} walkthrough_doc={:?} decision={:?}",
+        outcome.sub_task_result.status,
+        outcome.walkthrough_doc_id,
+        outcome.auto_decision,
+    );
+
+    println!("[demo] 4. Running Dream lint + cluster…");
+    let jobs = std::sync::Arc::new(jarvis_control::MaintenanceJobs::new(db.clone()));
+    let lint = jobs.clone().run_lint("global").await;
+    println!(
+        "         lint duplicates={} scratch={} weak_lessons={}",
+        lint.duplicates_deprecated, lint.scratch_purged, lint.weak_lessons_demoted
+    );
+
+    println!("[demo] 5. Dumping dashboard metrics…");
+    println!(
+        "         active_sessions={} raw_events={} memories={} pending_outbox={}",
+        jarvis_db::session_repo::list_recent(&db, 100)?.len(),
+        jarvis_db::raw_event_log::count(&db)?,
+        jarvis_db::memory_repo::count(&db)?,
+        jarvis_db::outbox::pending_count(&db)?,
+    );
+
+    println!("[demo] all good. ✨");
     Ok(())
 }
 

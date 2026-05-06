@@ -620,6 +620,26 @@ CREATE TRIGGER IF NOT EXISTS trg_audit_log_no_update
 CREATE TRIGGER IF NOT EXISTS trg_audit_log_no_delete
     BEFORE DELETE ON audit_log
     BEGIN SELECT RAISE(ABORT, 'audit_log is immutable'); END;
+
+-- ─── outbox (cross-device replication queue, Section 24.5) ─────────────
+-- Append-only journal of state mutations the local node owes to its
+-- peers. A separate replication daemon drains the outbox in seq
+-- order and acks via the `delivered_at` column. UPDATE is permitted
+-- *only* on `delivered_at` so the journal stays append-shaped while
+-- still allowing the daemon to mark progress.
+
+CREATE TABLE IF NOT EXISTS outbox (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    target_table    TEXT NOT NULL,
+    target_id       TEXT NOT NULL,
+    payload_json    TEXT NOT NULL,
+    delivered_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_pending
+    ON outbox (delivered_at, seq);
 "#;
 
 pub fn run(conn: &Connection) -> DbResult<()> {

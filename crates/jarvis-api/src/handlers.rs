@@ -75,3 +75,33 @@ pub fn session_messages(db: &Db, session: &str) -> Result<Response<Full<Bytes>>,
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(json_ok(&messages))
 }
+
+pub fn dashboard_metrics(db: &Db) -> Result<Response<Full<Bytes>>, ApiError> {
+    let active_sessions = jarvis_db::session_repo::list_recent(db, 1000)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .len();
+    let raw_event_count = jarvis_db::raw_event_log::count(db)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let memory_count = jarvis_db::memory_repo::count(db)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let outbox_pending = jarvis_db::outbox::pending_count(db)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let collector = jarvis_growth::Collector::new(db.clone());
+    let route_decisions = collector
+        .count_of("route_decision")
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let promoted_artifacts = collector
+        .list_artifacts(None, Some(jarvis_growth::ArtifactStatus::Promoted))
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .len();
+    let payload = serde_json::json!({
+        "active_sessions": active_sessions,
+        "raw_event_count": raw_event_count,
+        "memory_count": memory_count,
+        "outbox_pending": outbox_pending,
+        "route_decisions": route_decisions,
+        "promoted_artifacts": promoted_artifacts,
+        "ts": chrono::Utc::now().to_rfc3339(),
+    });
+    Ok(json_ok(&payload))
+}

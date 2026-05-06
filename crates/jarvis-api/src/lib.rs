@@ -92,6 +92,7 @@ async fn handle(
         (Method::GET, "/sessions/recent") => handlers::recent_sessions(&state.db),
         (Method::GET, "/growth/events") => handlers::growth_events(&state.db),
         (Method::GET, "/growth/artifacts") => handlers::growth_artifacts(&state.db),
+        (Method::GET, "/dashboard/metrics") => handlers::dashboard_metrics(&state.db),
         (Method::POST, "/memory") => write_memory(&state, req).await,
         (Method::POST, "/steer") => post_steer(&state, req).await,
         (Method::POST, "/interrupt") => post_interrupt(&state, req).await,

@@ -16,11 +16,13 @@ pub mod plugin;
 pub mod registry;
 pub mod result;
 pub mod runtime;
+pub mod sandbox;
 
 pub use plugin::{LoadedPlugin, Plugin, PluginError, PluginRegistry};
 pub use registry::{Tool, ToolBox, ToolRegistry};
 pub use result::{ToolResult, ToolStatus};
 pub use runtime::{CallContext, ToolRuntime};
+pub use sandbox::{SandboxDenial, SandboxSpec};
 
 #[cfg(test)]
 mod tests;
