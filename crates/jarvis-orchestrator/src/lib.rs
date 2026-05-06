@@ -8,6 +8,7 @@
 pub mod activity_card;
 pub mod artifact_registry;
 pub mod checkpoint;
+pub mod commands;
 pub mod conversation_bus;
 pub mod regression;
 pub mod steer;
@@ -21,6 +22,10 @@ pub mod workspace;
 pub use activity_card::*;
 pub use artifact_registry::*;
 pub use checkpoint::*;
+pub use commands::{
+    defaults as default_command_catalogue, CommandCatalogue, CommandDefinition,
+    CommandExecution, CommandRunner, CommandStatus, CommandStep, StepProgress, StepStatus,
+};
 pub use conversation_bus::*;
 pub use steer::*;
 pub use sub_task::*;

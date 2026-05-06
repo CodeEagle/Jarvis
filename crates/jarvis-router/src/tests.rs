@@ -330,6 +330,39 @@ fn confidence_never_reaches_one() {
     assert!(decision.confidence < 1.0);
 }
 
+// ── system prompt assembler ─────────────────────────────────────────────
+
+#[test]
+fn stable_block_includes_agent_identity() {
+    let agents = registry();
+    let coding = agents.iter().find(|a| a.r#type == "coding").unwrap();
+    let block = render_stable_block(&StablePromptInputs {
+        agent: coding,
+        persona: None,
+        framework_directives: &[],
+    });
+    assert!(block.contains("代码助手"));
+    assert!(block.contains("💻"));
+}
+
+#[test]
+fn stable_block_appends_persona_and_user_md() {
+    let agents = registry();
+    let coding = agents.iter().find(|a| a.r#type == "coding").unwrap();
+    let p = jarvis_memory::persona::Persona {
+        persona_md: "## 语气\n简洁直接".into(),
+        user_md: "## 用户偏好\n- 函数式".into(),
+    };
+    let block = render_stable_block(&StablePromptInputs {
+        agent: coding,
+        persona: Some(&p),
+        framework_directives: &["never bypass user confirmation"],
+    });
+    assert!(block.contains("简洁直接"));
+    assert!(block.contains("函数式"));
+    assert!(block.contains("never bypass"));
+}
+
 #[test]
 fn route_emits_growth_event() {
     let db = fresh_db();

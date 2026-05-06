@@ -879,6 +879,59 @@ fn regression_skips_unapproved_walkthrough() {
     assert_eq!(report.items.len(), 0);
 }
 
+// ── commands.json runner ────────────────────────────────────────────────
+
+#[test]
+fn default_command_catalogue_has_known_ids() {
+    let cat = default_command_catalogue();
+    assert!(cat.get("walkthrough_and_pr").is_some());
+    assert!(cat.get("regression_check").is_some());
+    assert!(cat.get("steer_current").is_some());
+    assert!(cat.get("parallel_explore").is_some());
+}
+
+#[test]
+fn command_runner_lifecycle() {
+    let db = Db::in_memory().unwrap();
+    let runner = commands::CommandRunner::new(db, default_command_catalogue());
+    let exec = runner.start("sess_1", "walkthrough_and_pr", "user_button").unwrap();
+    assert_eq!(exec.status, commands::CommandStatus::Running);
+    assert_eq!(exec.steps.len(), 3);
+
+    let after_first = runner
+        .record_step(&exec.id, 0, commands::StepStatus::Done, Some("ok"))
+        .unwrap();
+    assert_eq!(after_first.steps[0].status, commands::StepStatus::Done);
+    assert_eq!(after_first.status, commands::CommandStatus::Running);
+
+    runner
+        .record_step(&exec.id, 1, commands::StepStatus::Done, None)
+        .unwrap();
+    let final_state = runner
+        .record_step(&exec.id, 2, commands::StepStatus::Done, None)
+        .unwrap();
+    assert_eq!(final_state.status, commands::CommandStatus::Completed);
+    assert!(final_state.completed_at.is_some());
+}
+
+#[test]
+fn command_runner_failure_short_circuits() {
+    let db = Db::in_memory().unwrap();
+    let runner = commands::CommandRunner::new(db, default_command_catalogue());
+    let exec = runner.start("sess_1", "walkthrough_and_pr", "user_button").unwrap();
+    let after = runner
+        .record_step(&exec.id, 0, commands::StepStatus::Failed, Some("oops"))
+        .unwrap();
+    assert_eq!(after.status, commands::CommandStatus::Failed);
+}
+
+#[test]
+fn command_runner_unknown_command_errors() {
+    let db = Db::in_memory().unwrap();
+    let runner = commands::CommandRunner::new(db, default_command_catalogue());
+    assert!(runner.start("sess_1", "no_such", "user_button").is_err());
+}
+
 // suppress unused import warning when sub_task module is not used in tests
 #[test]
 fn sub_task_envelope_serializes() {

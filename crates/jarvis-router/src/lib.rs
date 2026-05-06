@@ -14,12 +14,14 @@ pub mod intent;
 pub mod mention;
 pub mod router;
 pub mod session_resolver;
+pub mod system_prompt;
 
 pub use agent_registry::*;
 pub use intent::*;
 pub use mention::*;
 pub use router::*;
 pub use session_resolver::*;
+pub use system_prompt::{render_stable_block, StablePromptInputs};
 
 #[cfg(test)]
 mod tests;

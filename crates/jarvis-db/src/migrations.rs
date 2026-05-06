@@ -538,6 +538,23 @@ CREATE TABLE IF NOT EXISTS regression_reports (
 
 CREATE INDEX IF NOT EXISTS idx_regression_reports_time
     ON regression_reports (triggered_at DESC);
+
+-- ─── command runner (Section 8.17.6) ───────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS command_executions (
+    id            TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    command_id    TEXT NOT NULL,
+    command_label TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    triggered_by  TEXT NOT NULL DEFAULT 'user_button',
+    steps_json    TEXT NOT NULL DEFAULT '[]',
+    started_at    TEXT NOT NULL,
+    completed_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_exec_session
+    ON command_executions (session_id, started_at DESC);
 "#;
 
 pub fn run(conn: &Connection) -> DbResult<()> {

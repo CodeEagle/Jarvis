@@ -61,7 +61,7 @@ crates/
                         growth events / growth artifacts
 ```
 
-**166 unit tests pass** across the workspace.
+**172 unit tests pass** across the workspace.
 
 ---
 
@@ -132,19 +132,14 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 ```
 jarvis-core         13 tests
 jarvis-db           13 tests
-jarvis-memory       36 tests   (incl. cold-start retire, lint, FTS5,
-                               Dream cluster, Dream inference promotion
-                               + refutation, Persona render + sync)
+jarvis-memory       36 tests
 jarvis-tools         8 tests
-jarvis-growth       17 tests   (incl. dynamic model up/downgrade with
-                               debounce, token-budget self-learning)
-jarvis-orchestrator 42 tests   (incl. workspace lock, walkthrough auto-
-                               approval, verifier, activity-card,
-                               regression classifier)
-jarvis-router       28 tests
+jarvis-growth       17 tests
+jarvis-orchestrator 46 tests   (+4: commands.json runner lifecycle)
+jarvis-router       30 tests   (+2: stable system prompt assembler)
 jarvis-control       9 tests
 ─────────────────
-TOTAL              166 tests
+TOTAL              172 tests
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,
@@ -186,12 +181,16 @@ etc.
 - ⬜ Codex steer adapter
 - ⬜ soft / hard / async interrupt with Watchdog escalation
 
-### v0.4 (in progress)
-- ✅ Dream system: lint, cluster, inference (this commit)
-- ✅ Dynamic model up/downgrade with debouncing (this commit)
-- ✅ token-budget self-learning with ±40% guardrail (this commit)
-- ✅ Persona layer (persona.md + user.md sync) (this commit)
-- ⬜ Inject Persona stable block into the Router/Orchestrator system prompt
+### v0.4 (mostly done)
+- ✅ Dream system: lint, cluster, inference
+- ✅ Dynamic model up/downgrade with debouncing
+- ✅ token-budget self-learning with ±40% guardrail
+- ✅ Persona layer (persona.md + user.md sync)
+- ✅ Stable system-prompt assembler (`render_stable_block`) consumes the
+  Persona layer and the agent definition; ready for downstream callers
+  to feed into LLM clients.
+- ✅ commands.json catalogue + CommandRunner state machine
+  (Section 8.17) — defaults catalogue covers 6 of the 7 PRD commands
 
 ### v1.0
 - Growth Dashboard, multi-device sync, Qdrant / pgvector,
