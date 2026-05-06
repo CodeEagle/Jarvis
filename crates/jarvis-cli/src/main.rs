@@ -21,14 +21,10 @@ use jarvis_memory::{
     Retrieval,
 };
 use jarvis_router::{Router, RouterInput};
-use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with_target(false)
-        .init();
+    let _ = jarvis_control::init_tracing();
 
     let args: Vec<String> = env::args().collect();
     let db_path = env::var("JARVIS_DB").unwrap_or_else(|_| "jarvis.db".into());
@@ -65,6 +61,8 @@ async fn main() -> anyhow::Result<()> {
         Some("trace") => trace_command(db, &args[2..])?,
         Some("replay") => replay_command(db, &args[2..])?,
         Some("audit") => audit_command(db, &args[2..])?,
+        Some("trace-view") => trace_view_command(db, &args[2..])?,
+        Some("memory-history") => memory_history_command(db, &args[2..])?,
         Some("serve") => serve_command(db, &args[2..]).await?,
         Some("maintenance") => maintenance_command(db, &args[2..]).await?,
         _ => {
@@ -310,6 +308,64 @@ fn audit_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn trace_view_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+    let trace_id = args.first().cloned().unwrap_or_default();
+    anyhow::ensure!(!trace_id.is_empty(), "trace-view requires <trace_id>");
+    let events = jarvis_db::provenance::trace_events(&db, &trace_id)?;
+    println!("─── trace {trace_id} ─── {} events ───", events.len());
+    for e in &events {
+        let safe = e.safe_content.as_deref().unwrap_or(&e.raw_content);
+        let agent = e.agent_id.as_deref().unwrap_or("-");
+        println!(
+            "  [{}] {:>5} {} agent={agent} session={:?}\n    {}",
+            e.ts.format("%H:%M:%S%.3f"),
+            e.seq,
+            e.event_type,
+            e.session_id,
+            safe.chars().take(180).collect::<String>(),
+        );
+    }
+    let session_id = events.first().and_then(|e| e.session_id.clone());
+    if let Some(sid) = session_id {
+        let audit = jarvis_db::audit_log::list_for_session(&db, &sid, 50)?;
+        let related: Vec<_> = audit
+            .into_iter()
+            .filter(|a| a.trace_id.as_deref() == Some(trace_id.as_str()))
+            .collect();
+        if !related.is_empty() {
+            println!("\n─── audit ── {} entries ───", related.len());
+            for a in related {
+                println!(
+                    "  [{}] {} {} → {} {}",
+                    a.ts.format("%H:%M:%S%.3f"),
+                    a.actor,
+                    a.target.as_deref().unwrap_or("-"),
+                    a.status.as_str(),
+                    a.output_summary.as_deref().unwrap_or(""),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn memory_history_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+    let memory_id = args.first().cloned().unwrap_or_default();
+    anyhow::ensure!(!memory_id.is_empty(), "memory-history requires <memory_id>");
+    let history = jarvis_db::provenance::memory_history(&db, &memory_id)?;
+    println!("─── memory {memory_id} ─── {} entries ───", history.len());
+    for h in history {
+        println!(
+            "  [{}] {} module={} reason={:?}",
+            h.ts.format("%Y-%m-%d %H:%M:%S"),
+            h.change_type,
+            h.source_module.as_deref().unwrap_or("-"),
+            h.reason.as_deref().unwrap_or(""),
+        );
+    }
+    Ok(())
+}
+
 async fn serve_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     let addr_str = args.first().cloned().unwrap_or_else(|| "127.0.0.1:7777".into());
     let addr: std::net::SocketAddr = addr_str.parse()?;
@@ -351,6 +407,8 @@ Commands:
   jarvis trace <trace_id>          dump every raw event for a trace
   jarvis replay <session> [iso]    point-in-time replay (default: now)
   jarvis audit <session_id>        dump audit_log for a session
+  jarvis trace-view <trace_id>     pretty-print trace + audit
+  jarvis memory-history <mem_id>   show full Memory change log
   jarvis maintenance [scope]       run Dream lint + cluster once
   jarvis serve [host:port]         start HTTP API (default 127.0.0.1:7777)
 

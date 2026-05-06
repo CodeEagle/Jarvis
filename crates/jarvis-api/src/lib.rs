@@ -24,7 +24,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -33,9 +33,12 @@ use hyper_util::rt::TokioIo;
 use jarvis_db::Db;
 use serde::Deserialize;
 use tokio::net::TcpListener;
+
+pub type ApiBody = BoxBody<Bytes, Infallible>;
 use tracing::{info, warn};
 
 pub mod handlers;
+pub mod stream;
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -69,9 +72,20 @@ async fn handle(
     state: Arc<ApiState>,
     req: Request<Incoming>,
     _peer: SocketAddr,
-) -> Result<Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<ApiBody>, Infallible> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
+
+    // SSE first — it's the only handler that returns a streaming
+    // body type.
+    if method == Method::GET {
+        if let Some(rest) = path.strip_prefix("/sessions/") {
+            if let Some(id) = rest.strip_suffix("/stream") {
+                return Ok(stream::open_stream(state.db.clone(), id.to_string()));
+            }
+        }
+    }
+
     let result = match (method.clone(), path.as_str()) {
         (Method::GET, "/healthz") => Ok(json_ok(&serde_json::json!({"ok": true}))),
         (Method::POST, "/router/input") => route_input(&state, req).await,
@@ -132,9 +146,15 @@ async fn handle(
         _ => Err(ApiError::NotFound(format!("{method} {path}"))),
     };
     Ok(match result {
-        Ok(r) => r,
-        Err(e) => error_response(e),
+        Ok(r) => to_box(r),
+        Err(e) => to_box(error_response(e)),
     })
+}
+
+fn to_box(resp: Response<Full<Bytes>>) -> Response<ApiBody> {
+    let (parts, body) = resp.into_parts();
+    let boxed: ApiBody = body.boxed();
+    Response::from_parts(parts, boxed)
 }
 
 #[derive(Debug, thiserror::Error)]

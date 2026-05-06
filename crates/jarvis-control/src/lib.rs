@@ -15,11 +15,13 @@ pub mod control_plane;
 pub mod fallback;
 pub mod scheduler;
 pub mod sla;
+pub mod tracing_init;
 pub mod watchdog;
 
 pub use control_plane::*;
 pub use fallback::*;
 pub use scheduler::{MaintenanceJobs, Scheduler, SchedulerConfig};
+pub use tracing_init::init as init_tracing;
 pub use sla::*;
 pub use watchdog::*;
 

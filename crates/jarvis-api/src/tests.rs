@@ -167,6 +167,76 @@ async fn audit_returns_array() {
 }
 
 #[tokio::test]
+async fn sse_stream_emits_existing_raw_events_on_connect() {
+    let state = ApiState {
+        db: Db::in_memory().unwrap(),
+    };
+    for content in ["hello world", "second message"] {
+        jarvis_db::raw_event_log::append(
+            &state.db,
+            jarvis_db::raw_event_log::AppendEvent {
+                event_type: jarvis_db::RawEventKind::UserMessage,
+                session_id: Some("sess_sse"),
+                trace_id: None,
+                agent_id: None,
+                raw_content: content,
+                safe_content: None,
+            },
+        )
+        .unwrap();
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let arc_state = Arc::new(state);
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let svc_state = arc_state.clone();
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |req| {
+                    handle(svc_state.clone(), req, peer)
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client
+        .write_all(b"GET /sessions/sess_sse/stream HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 4096];
+    let mut total = Vec::new();
+    let read_loop = async {
+        loop {
+            let n = client.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            total.extend_from_slice(&buf[..n]);
+            let s = String::from_utf8_lossy(&total);
+            if s.matches("event: user_message").count() >= 2 {
+                break;
+            }
+        }
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), read_loop).await;
+    server.abort();
+    let response = String::from_utf8_lossy(&total);
+    assert!(response.contains("text/event-stream"), "headers: {response}");
+    assert!(response.contains("event: user_message"), "body: {response}");
+    assert!(response.contains("hello"), "body: {response}");
+}
+
+#[tokio::test]
 async fn end_to_end_serve_and_client() {
     // Bring up the server on an OS-assigned port and exercise /healthz.
     let state = ApiState {

@@ -23,3 +23,4 @@ hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
 bytes.workspace = true
+futures-util = "0.3"
