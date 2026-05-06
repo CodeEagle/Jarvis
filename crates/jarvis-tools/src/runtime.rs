@@ -154,6 +154,31 @@ impl ToolRuntime {
                 safe_content: None,
             },
         );
+
+        // Audit log entry — semantic record of the authorisation
+        // decision. Maps ToolStatus → AuditStatus.
+        let audit_status = match result.status {
+            ToolStatus::Success => jarvis_db::audit_log::AuditStatus::Success,
+            ToolStatus::PermissionDenied | ToolStatus::BlockedByScope => {
+                jarvis_db::audit_log::AuditStatus::Denied
+            }
+            ToolStatus::AwaitingConfirmation => {
+                jarvis_db::audit_log::AuditStatus::AwaitingConfirmation
+            }
+            ToolStatus::Timeout
+            | ToolStatus::Unavailable
+            | ToolStatus::Error => jarvis_db::audit_log::AuditStatus::Failed,
+        };
+        let _ = jarvis_db::audit_log::record_tool_call(
+            &self.db,
+            ctx.session_id,
+            ctx.trace_id,
+            ctx.agent_id.unwrap_or("tool_runtime"),
+            &result.tool,
+            audit_status,
+            Some(&result.output_summary),
+        );
+
         result
     }
 }

@@ -66,6 +66,53 @@ impl Router {
         &self.growth
     }
 
+    /// Section 9.5.5 cold-start: when callers can resolve a session
+    /// they're returning to AND the gap from `last_active_at` exceeds
+    /// `gap_threshold`, capture a snapshot and pin it for the next
+    /// `valid_for_turns` turns. Returns the snapshot id when one is
+    /// captured, `None` when no capture was needed.
+    pub fn maybe_capture_cold_start(
+        &self,
+        session_id: &str,
+        gap_threshold: chrono::Duration,
+        valid_for_turns: u32,
+    ) -> jarvis_db::error::DbResult<Option<String>> {
+        let store = jarvis_memory::cold_start::ColdStartStore::new(self.db.clone());
+        if store.active_for(session_id)?.is_some() {
+            return Ok(None);
+        }
+        let session = match jarvis_db::session_repo::get_session(&self.db, session_id)? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let gap = chrono::Utc::now() - session.last_active_at;
+        if gap < gap_threshold {
+            return Ok(None);
+        }
+        let recent = jarvis_db::session_repo::recent_messages(&self.db, session_id, 5)?;
+        let recent_strs: Vec<String> = recent
+            .iter()
+            .map(|m| {
+                let prefix = match m.role {
+                    jarvis_core::session::MessageRole::User => "user",
+                    jarvis_core::session::MessageRole::Assistant => "assistant",
+                    jarvis_core::session::MessageRole::System => "system",
+                    jarvis_core::session::MessageRole::Tool => "tool",
+                };
+                format!("[{prefix}] {}", m.content)
+            })
+            .collect();
+        let snapshot = store.capture(jarvis_memory::cold_start::SnapshotInputs {
+            session_id,
+            rolling_summary: &session.long_summary,
+            recent_messages: &recent_strs,
+            memory_hits: &[],
+            cross_session: &[],
+            valid_for_turns,
+        })?;
+        Ok(Some(snapshot.id))
+    }
+
     /// Async route through an `LlmJudge`. The judge's outcome is taken
     /// when its `confidence` outranks the rule layer's; otherwise the
     /// decision falls through to the rule-only path. A `None` from the

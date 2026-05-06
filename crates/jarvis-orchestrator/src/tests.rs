@@ -879,6 +879,118 @@ fn regression_skips_unapproved_walkthrough() {
     assert_eq!(report.items.len(), 0);
 }
 
+// ── worker-process driver ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn worker_driver_returns_parsed_subtask_result() {
+    use std::time::Duration;
+    // Echo a SubTaskResult JSON line to stdout. The driver reads
+    // stdin (envelope), then we discard it and emit our prepared
+    // payload via /bin/sh.
+    let payload = r#"{"sub_task_id":"placeholder","status":"success","summary":"ran ok","artifact_ids":[],"escalation":null,"token_used":3,"tool_calls_count":1,"completed_at":"2026-05-06T00:00:00Z"}"#;
+    let cmd = worker_driver::WorkerCommand::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("cat >/dev/null; printf '{}\\n' '{payload}'", "%s"))
+        .timeout(Duration::from_secs(5));
+    let driver = worker_driver::WorkerProcessDriver::new("test", cmd);
+    let envelope = SubTaskEnvelope {
+        sub_task_id: "real_id".into(),
+        parent_task_id: "task_root".into(),
+        trace_id: "trc".into(),
+        title: "x".into(),
+        instruction: "x".into(),
+        depends_on_results: vec![],
+        input_artifact_refs: vec![],
+        tool_scope: jarvis_core::tool::ToolScope::empty(),
+        output_spec: OutputSpec {
+            format: "text".into(),
+            max_tokens: 100,
+        },
+        constraints: SubTaskConstraints {
+            max_tool_calls: 0,
+            max_file_reads: 0,
+            token_budget: 100,
+            timeout_ms: 5000,
+        },
+        tentacle_path: None,
+    };
+    let result = dispatch::SubAgentDriver::execute(&driver, envelope).await;
+    assert_eq!(result.status, sub_task::SubTaskStatus::Success);
+    assert_eq!(result.summary, "ran ok");
+    assert_eq!(result.sub_task_id, "real_id"); // driver re-stamps id
+    assert_eq!(result.token_used, 3);
+}
+
+#[tokio::test]
+async fn worker_driver_failed_on_nonzero_exit() {
+    use std::time::Duration;
+    let cmd = worker_driver::WorkerCommand::new("/bin/sh")
+        .arg("-c")
+        .arg("cat >/dev/null; echo 'broke' >&2; exit 7")
+        .timeout(Duration::from_secs(5));
+    let driver = worker_driver::WorkerProcessDriver::new("test", cmd);
+    let envelope = SubTaskEnvelope {
+        sub_task_id: "id_x".into(),
+        parent_task_id: "task_root".into(),
+        trace_id: "trc".into(),
+        title: "x".into(),
+        instruction: "x".into(),
+        depends_on_results: vec![],
+        input_artifact_refs: vec![],
+        tool_scope: jarvis_core::tool::ToolScope::empty(),
+        output_spec: OutputSpec {
+            format: "text".into(),
+            max_tokens: 100,
+        },
+        constraints: SubTaskConstraints {
+            max_tool_calls: 0,
+            max_file_reads: 0,
+            token_budget: 100,
+            timeout_ms: 5000,
+        },
+        tentacle_path: None,
+    };
+    let result = dispatch::SubAgentDriver::execute(&driver, envelope).await;
+    assert_eq!(result.status, sub_task::SubTaskStatus::Failed);
+    let escalation = result.escalation.expect("escalation");
+    assert!(escalation.reason.contains("broke"));
+}
+
+#[tokio::test]
+async fn worker_driver_times_out() {
+    use std::time::Duration;
+    let cmd = worker_driver::WorkerCommand::new("/bin/sh")
+        .arg("-c")
+        .arg("cat >/dev/null; sleep 60")
+        .timeout(Duration::from_millis(150));
+    let driver = worker_driver::WorkerProcessDriver::new("test", cmd);
+    let envelope = SubTaskEnvelope {
+        sub_task_id: "id_t".into(),
+        parent_task_id: "task_root".into(),
+        trace_id: "trc".into(),
+        title: "x".into(),
+        instruction: "x".into(),
+        depends_on_results: vec![],
+        input_artifact_refs: vec![],
+        tool_scope: jarvis_core::tool::ToolScope::empty(),
+        output_spec: OutputSpec {
+            format: "text".into(),
+            max_tokens: 100,
+        },
+        constraints: SubTaskConstraints {
+            max_tool_calls: 0,
+            max_file_reads: 0,
+            token_budget: 100,
+            timeout_ms: 5000,
+        },
+        tentacle_path: None,
+    };
+    let result = dispatch::SubAgentDriver::execute(&driver, envelope).await;
+    assert_eq!(result.status, sub_task::SubTaskStatus::Failed);
+    let summary = result.summary;
+    assert!(summary.contains("timeout") || summary.contains("exceeded"));
+}
+
 // ── orchestration pipeline ──────────────────────────────────────────────
 
 #[tokio::test]

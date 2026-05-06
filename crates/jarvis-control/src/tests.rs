@@ -105,6 +105,59 @@ async fn control_plane_returns_resolved_for_simple_input() {
     }
 }
 
+// ── scheduler / maintenance ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn maintenance_jobs_run_lint_synchronously() {
+    use std::sync::Arc;
+    let db = Db::in_memory().unwrap();
+    // Seed a stale scratch memory the lint should sweep.
+    let m = jarvis_core::memory::Memory {
+        id: "mem_stale".into(),
+        r#type: jarvis_core::memory::MemoryType::ScratchMemory,
+        scope: "global".into(),
+        content: "transient note".into(),
+        entities: vec![],
+        confidence: 0.3,
+        trust_score: 0.3,
+        half_life_days: 0,
+        retrieve_count: 0,
+        last_retrieved_at: None,
+        source_trace_id: None,
+        source_type: jarvis_core::memory::SourceType::Inferred,
+        conflict_ids: vec![],
+        status: jarvis_core::memory::MemoryStatus::Approved,
+        emotion_energy: 0.0,
+        emotion_polarity: jarvis_core::memory::EmotionPolarity::Neutral,
+        tier: 4,
+        expires_at: None,
+        cluster_member_ids: vec![],
+        created_at: chrono::Utc::now() - chrono::Duration::hours(48),
+        updated_at: chrono::Utc::now(),
+    };
+    jarvis_db::memory_repo::upsert(
+        &db,
+        &m,
+        jarvis_db::memory_repo::WriteOpts {
+            change_type: jarvis_core::memory::MemoryChangeType::Created,
+            source_module: None,
+            reason: None,
+        },
+    )
+    .unwrap();
+
+    let jobs = Arc::new(scheduler::MaintenanceJobs::new(db));
+    let report = jobs.run_lint("global").await;
+    assert_eq!(report.scratch_purged, 1);
+}
+
+#[test]
+fn scheduler_config_defaults_24h_lint() {
+    let cfg = scheduler::SchedulerConfig::default();
+    assert_eq!(cfg.dream_lint_period.as_secs(), 24 * 3600);
+    assert_eq!(cfg.scope, "global");
+}
+
 #[tokio::test]
 async fn control_plane_falls_back_when_budget_too_tight() {
     // Set fallback budget to 1ms so the router can't beat it.

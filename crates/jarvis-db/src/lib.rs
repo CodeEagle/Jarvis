@@ -11,6 +11,7 @@
 //! All public APIs are synchronous; the upper layers wrap them in
 //! `tokio::task::spawn_blocking` when needed.
 
+pub mod audit_log;
 mod conn;
 pub mod error;
 pub mod memory_change_log;

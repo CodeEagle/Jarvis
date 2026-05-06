@@ -13,11 +13,13 @@
 
 pub mod control_plane;
 pub mod fallback;
+pub mod scheduler;
 pub mod sla;
 pub mod watchdog;
 
 pub use control_plane::*;
 pub use fallback::*;
+pub use scheduler::{MaintenanceJobs, Scheduler, SchedulerConfig};
 pub use sla::*;
 pub use watchdog::*;
 

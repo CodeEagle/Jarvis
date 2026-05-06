@@ -64,6 +64,9 @@ async fn main() -> anyhow::Result<()> {
         Some("growth") => growth_command(db, &args[2..])?,
         Some("trace") => trace_command(db, &args[2..])?,
         Some("replay") => replay_command(db, &args[2..])?,
+        Some("audit") => audit_command(db, &args[2..])?,
+        Some("serve") => serve_command(db, &args[2..]).await?,
+        Some("maintenance") => maintenance_command(db, &args[2..]).await?,
         _ => {
             print_usage();
         }
@@ -289,21 +292,69 @@ fn replay_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn audit_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+    let session = args.first().cloned().unwrap_or_default();
+    anyhow::ensure!(!session.is_empty(), "audit requires <session_id>");
+    let entries = jarvis_db::audit_log::list_for_session(&db, &session, 100)?;
+    for e in entries {
+        println!(
+            "{} [{}] {} {} → {} {}",
+            e.ts.to_rfc3339(),
+            e.actor,
+            e.action,
+            e.target.as_deref().unwrap_or("-"),
+            e.status.as_str(),
+            e.output_summary.as_deref().unwrap_or(""),
+        );
+    }
+    Ok(())
+}
+
+async fn serve_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+    let addr_str = args.first().cloned().unwrap_or_else(|| "127.0.0.1:7777".into());
+    let addr: std::net::SocketAddr = addr_str.parse()?;
+    let state = jarvis_api::ApiState { db };
+    jarvis_api::serve(state, addr).await
+}
+
+async fn maintenance_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+    let scope = args.first().cloned().unwrap_or_else(|| "global".into());
+    let jobs = std::sync::Arc::new(jarvis_control::MaintenanceJobs::new(db));
+    let lint = jobs.clone().run_lint(&scope).await;
+    println!(
+        "lint: duplicates_deprecated={} scratch_purged={} inferences_expired={} weak_lessons={} conflicts_dampened={}",
+        lint.duplicates_deprecated,
+        lint.scratch_purged,
+        lint.inferences_expired,
+        lint.weak_lessons_demoted,
+        lint.conflicts_dampened,
+    );
+    let cluster = jobs.run_cluster(&scope).await;
+    println!(
+        "cluster: clusters_created={} members_absorbed={}",
+        cluster.clusters_created, cluster.members_absorbed
+    );
+    Ok(())
+}
+
 fn print_usage() {
     println!("Jarvis v0.4 CLI
 
 Commands:
-  jarvis route <input>            run Router and print decision
-  jarvis chat                     interactive REPL
-  jarvis memory write <text>      record a user-explicit memory
-  jarvis memory list              list memories
-  jarvis raw-log <session_id>     dump raw_event_log
-  jarvis growth events [type]     list growth events
-  jarvis growth artifacts         list growth artifacts
-  jarvis trace <trace_id>         dump every raw event for a trace
-  jarvis replay <session> [iso]   point-in-time replay (default: now)
+  jarvis route <input>             run Router and print decision
+  jarvis chat                      interactive REPL
+  jarvis memory write <text>       record a user-explicit memory
+  jarvis memory list               list memories
+  jarvis raw-log <session_id>      dump raw_event_log
+  jarvis growth events [type]      list growth events
+  jarvis growth artifacts          list growth artifacts
+  jarvis trace <trace_id>          dump every raw event for a trace
+  jarvis replay <session> [iso]    point-in-time replay (default: now)
+  jarvis audit <session_id>        dump audit_log for a session
+  jarvis maintenance [scope]       run Dream lint + cluster once
+  jarvis serve [host:port]         start HTTP API (default 127.0.0.1:7777)
 
 Env:
-  JARVIS_DB                       path to sqlite file (default: ./jarvis.db)
+  JARVIS_DB                        path to sqlite file (default: ./jarvis.db)
 ");
 }

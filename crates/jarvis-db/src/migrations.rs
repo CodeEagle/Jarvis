@@ -579,6 +579,47 @@ CREATE TABLE IF NOT EXISTS skills (
 
 CREATE INDEX IF NOT EXISTS idx_skills_status
     ON skills (status, name);
+
+-- ─── audit_log (Section 15.5) ──────────────────────────────────────────
+-- Distinct from raw_event_log: this is the *action* audit trail
+-- (file modifications, tool calls, external calls, decisions). It
+-- carries before/after hashes for file mutations so changes can be
+-- proven without keeping full diffs.
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id              TEXT PRIMARY KEY,
+    ts              TEXT NOT NULL,
+    trace_id        TEXT,
+    session_id      TEXT,
+    task_id         TEXT,
+    actor           TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    target          TEXT,
+    status          TEXT NOT NULL,
+    input_summary   TEXT,
+    output_summary  TEXT,
+    before_hash     TEXT,
+    after_hash      TEXT,
+    data_json       TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_session
+    ON audit_log (session_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor
+    ON audit_log (actor, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action
+    ON audit_log (action, ts DESC);
+
+-- audit_log is immutable: every action is recorded once and never
+-- mutated. We use the same trigger pattern as raw_event_log.
+
+CREATE TRIGGER IF NOT EXISTS trg_audit_log_no_update
+    BEFORE UPDATE ON audit_log
+    BEGIN SELECT RAISE(ABORT, 'audit_log is immutable'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_audit_log_no_delete
+    BEFORE DELETE ON audit_log
+    BEGIN SELECT RAISE(ABORT, 'audit_log is immutable'); END;
 "#;
 
 pub fn run(conn: &Connection) -> DbResult<()> {

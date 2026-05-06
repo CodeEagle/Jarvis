@@ -54,14 +54,25 @@ crates/
   jarvis-orchestrator/  TaskTree + ArtifactRegistry + SubTaskEnvelope +
                         ConversationBus + ownership state machine +
                         SubTaskCheckpoint + Steer protocol +
-                        Tentacle file generator with locks
+                        Tentacle file generator with locks +
+                        Workspace lock (in-memory + durable) +
+                        Walkthrough + Verifier + ActivityCard +
+                        RegressionOrchestrator + commands.json runner +
+                        SubAgentDispatcher + InProcessDriver +
+                        WorkerProcessDriver + Interrupt protocol +
+                        OrchestrationPipeline + SteerAdapter
   jarvis-control/       Control Plane / Task Plane separation, response SLA,
-                        sub-agent Watchdog, fallback responder
+                        sub-agent Watchdog, fallback responder, periodic
+                        Scheduler (Dream lint / cluster / lock sweep)
+  jarvis-api/           HTTP API — POST /router/input, GET /sessions/*,
+                        GET /memory/*, POST /memory, GET /raw-log/*,
+                        GET /trace/*, GET /audit/*, GET /growth/*,
+                        GET /walkthrough/*, GET /healthz
   jarvis-cli/           `jarvis` binary — route / chat / memory / raw-log /
-                        growth events / growth artifacts
+                        growth / trace / replay / audit / maintenance / serve
 ```
 
-**205 unit tests pass** across the workspace.
+**223 unit tests pass** across the workspace.
 
 ---
 
@@ -131,17 +142,22 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 
 ```
 jarvis-core         13 tests
-jarvis-db           21 tests   (+6: redactor patterns + auto-redact in
-                               raw_event_log)
+jarvis-db           24 tests   (+3: audit log round-trip + immutability
+                               + filtering by session/actor)
 jarvis-memory       36 tests
-jarvis-tools         8 tests
+jarvis-tools        10 tests   (+2: tool calls write audit_log entries
+                               with correct AuditStatus)
 jarvis-growth       21 tests
-jarvis-orchestrator 61 tests   (+2: pipeline auto-approves + skips
-                               walkthrough on failure)
-jarvis-router       36 tests
-jarvis-control       9 tests
+jarvis-orchestrator 64 tests   (+3: worker-process driver success +
+                               nonzero exit + timeout)
+jarvis-router       38 tests   (+2: cold-start captured / skipped)
+jarvis-control      11 tests   (+2: maintenance jobs lint synchronously,
+                               scheduler config defaults)
+jarvis-api           6 tests   (NEW: healthz, recent sessions, missing
+                               session 404, empty memories, audit array,
+                               end-to-end TCP serve)
 ─────────────────
-TOTAL              205 tests
+TOTAL              223 tests
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,

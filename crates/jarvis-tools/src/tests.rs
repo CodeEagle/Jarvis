@@ -189,3 +189,51 @@ async fn denied_call_still_audited() {
     let n = jarvis_db::raw_event_log::count(&db).unwrap();
     assert!(n >= 2);
 }
+
+#[tokio::test]
+async fn tool_call_creates_audit_log_entry() {
+    let db = Db::in_memory().unwrap();
+    let rt = ToolRuntime::new(registry_with_simple_tools(), db.clone());
+    let scope = ToolScope {
+        allowed_tools: vec!["read_file".into()],
+        blocked_tools: vec![],
+        requires_confirmation: vec![],
+        max_tool_calls: 10,
+        max_parallel_tools: 1,
+    };
+    rt.call(
+        "read_file",
+        json!({ "path": "/x" }),
+        CallContext::new(&scope).with_session("sess_audit"),
+    )
+    .await;
+    let entries =
+        jarvis_db::audit_log::list_for_session(&db, "sess_audit", 10).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].action, "tool.call");
+    assert_eq!(entries[0].target.as_deref(), Some("read_file"));
+    assert_eq!(entries[0].status, jarvis_db::audit_log::AuditStatus::Success);
+}
+
+#[tokio::test]
+async fn denied_call_records_denied_audit_status() {
+    let db = Db::in_memory().unwrap();
+    let rt = ToolRuntime::new(registry_with_simple_tools(), db.clone());
+    let scope = ToolScope {
+        allowed_tools: vec!["read_file".into()],
+        blocked_tools: vec![],
+        requires_confirmation: vec![],
+        max_tool_calls: 10,
+        max_parallel_tools: 1,
+    };
+    rt.call(
+        "shell.exec",
+        json!({}),
+        CallContext::new(&scope).with_session("sess_denied"),
+    )
+    .await;
+    let entries =
+        jarvis_db::audit_log::list_for_session(&db, "sess_denied", 10).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].status, jarvis_db::audit_log::AuditStatus::Denied);
+}

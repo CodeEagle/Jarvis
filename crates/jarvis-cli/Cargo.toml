@@ -16,6 +16,7 @@ jarvis-tools.workspace = true
 jarvis-growth.workspace = true
 jarvis-orchestrator.workspace = true
 jarvis-control.workspace = true
+jarvis-api.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 tokio.workspace = true

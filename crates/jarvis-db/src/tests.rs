@@ -377,6 +377,115 @@ fn session_snapshot_blocks_update() {
     assert!(format!("{err}").contains("immutable"));
 }
 
+// ── audit_log (Section 15.5) ───────────────────────────────────────────
+
+#[test]
+fn audit_log_round_trip() {
+    let db = fresh_db();
+    let id = audit_log::append(
+        &db,
+        audit_log::AppendAudit {
+            trace_id: Some("trc"),
+            session_id: Some("sess_1"),
+            task_id: None,
+            actor: "tool_runtime",
+            action: "tool.call",
+            target: Some("read_file"),
+            status: audit_log::AuditStatus::Success,
+            input_summary: None,
+            output_summary: Some("read 1 file"),
+            before_hash: None,
+            after_hash: None,
+            data_json: None,
+        },
+    )
+    .unwrap();
+    let back = audit_log::get(&db, &id).unwrap().unwrap();
+    assert_eq!(back.actor, "tool_runtime");
+    assert_eq!(back.status, audit_log::AuditStatus::Success);
+}
+
+#[test]
+fn audit_log_blocks_update() {
+    let db = fresh_db();
+    let id = audit_log::append(
+        &db,
+        audit_log::AppendAudit {
+            trace_id: None,
+            session_id: None,
+            task_id: None,
+            actor: "x",
+            action: "y",
+            target: None,
+            status: audit_log::AuditStatus::Success,
+            input_summary: None,
+            output_summary: None,
+            before_hash: None,
+            after_hash: None,
+            data_json: None,
+        },
+    )
+    .unwrap();
+    let err = db
+        .with(|conn| {
+            conn.execute(
+                "UPDATE audit_log SET actor = 'tampered' WHERE id = ?1",
+                rusqlite::params![id],
+            )
+            .map_err(error::DbError::Sqlite)?;
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(format!("{err}").contains("immutable"));
+}
+
+#[test]
+fn audit_log_filters_by_session_and_actor() {
+    let db = fresh_db();
+    audit_log::append(
+        &db,
+        audit_log::AppendAudit {
+            trace_id: None,
+            session_id: Some("sess_a"),
+            task_id: None,
+            actor: "alpha",
+            action: "x",
+            target: None,
+            status: audit_log::AuditStatus::Success,
+            input_summary: None,
+            output_summary: None,
+            before_hash: None,
+            after_hash: None,
+            data_json: None,
+        },
+    )
+    .unwrap();
+    audit_log::append(
+        &db,
+        audit_log::AppendAudit {
+            trace_id: None,
+            session_id: Some("sess_b"),
+            task_id: None,
+            actor: "beta",
+            action: "y",
+            target: None,
+            status: audit_log::AuditStatus::Denied,
+            input_summary: None,
+            output_summary: None,
+            before_hash: None,
+            after_hash: None,
+            data_json: None,
+        },
+    )
+    .unwrap();
+    let only_a = audit_log::list_for_session(&db, "sess_a", 10).unwrap();
+    assert_eq!(only_a.len(), 1);
+    assert_eq!(only_a[0].actor, "alpha");
+    let only_beta = audit_log::list_for_actor(&db, "beta", 10).unwrap();
+    assert_eq!(only_beta.len(), 1);
+    assert_eq!(only_beta[0].action, "y");
+}
+
 // ── redactor (Section 15.6) ────────────────────────────────────────────
 
 #[test]

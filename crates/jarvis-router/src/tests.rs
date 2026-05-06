@@ -397,6 +397,94 @@ async fn rule_based_judge_marks_clarification_when_hints_weak() {
     assert!(outcome.clarification_needed);
 }
 
+// ── cold-start integration ──────────────────────────────────────────────
+
+#[test]
+fn cold_start_captured_when_gap_exceeds_threshold() {
+    let db = fresh_db();
+    let n = now();
+    jarvis_db::session_repo::upsert_session(
+        &db,
+        &Session {
+            id: "sess_cold".into(),
+            title: "test".into(),
+            domain: "coding".into(),
+            topic: "x".into(),
+            summary: "".into(),
+            long_summary: "rolling summary v1".into(),
+            active_entities: vec![],
+            unresolved: vec![],
+            resolved: vec![],
+            recent_message_ids: vec![],
+            memory_refs: vec![],
+            skill_refs: vec![],
+            status: SessionStatus::Active,
+            created_at: n - Duration::hours(2),
+            updated_at: n - Duration::hours(2),
+            last_active_at: n - Duration::hours(2),
+        },
+    )
+    .unwrap();
+
+    let r = Router::new(db.clone());
+    let id = r
+        .maybe_capture_cold_start(
+            "sess_cold",
+            Duration::minutes(30),
+            5,
+        )
+        .unwrap();
+    assert!(id.is_some(), "expected snapshot to be captured");
+
+    // Second call sees the active snapshot and skips.
+    let id2 = r
+        .maybe_capture_cold_start(
+            "sess_cold",
+            Duration::minutes(30),
+            5,
+        )
+        .unwrap();
+    assert!(id2.is_none(), "expected no second snapshot");
+}
+
+#[test]
+fn cold_start_skipped_when_session_recent() {
+    let db = fresh_db();
+    let n = now();
+    jarvis_db::session_repo::upsert_session(
+        &db,
+        &Session {
+            id: "sess_recent".into(),
+            title: "test".into(),
+            domain: "coding".into(),
+            topic: "x".into(),
+            summary: "".into(),
+            long_summary: "".into(),
+            active_entities: vec![],
+            unresolved: vec![],
+            resolved: vec![],
+            recent_message_ids: vec![],
+            memory_refs: vec![],
+            skill_refs: vec![],
+            status: SessionStatus::Active,
+            created_at: n,
+            updated_at: n,
+            last_active_at: n,
+        },
+    )
+    .unwrap();
+
+    let r = Router::new(db);
+    let id = r
+        .maybe_capture_cold_start(
+            "sess_recent",
+            Duration::minutes(30),
+            5,
+        )
+        .unwrap();
+    assert!(id.is_none());
+}
+
 // ── Router with LLM judge integration ───────────────────────────────────
 
 #[tokio::test]
