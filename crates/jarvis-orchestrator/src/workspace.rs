@@ -217,3 +217,81 @@ impl WorktreeManager {
         self.worktrees_root().join(task_id).exists()
     }
 }
+
+// ── durable file-based workspace lock ───────────────────────────────────
+//
+// The in-memory `WorkspaceLocker` only coordinates within one process.
+// When two `jarvis` invocations target the same workspace at the same
+// time we need a sentinel on disk. `DurableWorkspaceLock` uses
+// `OpenOptions::create_new(true)` for atomic create-if-absent, then
+// removes the file on Drop. Stale locks (e.g. process killed
+// mid-write) get cleaned up by `clear_stale_lock` when the caller
+// supplies a max_age.
+
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
+use std::time::SystemTime;
+
+#[derive(Debug)]
+pub struct DurableWorkspaceLock {
+    path: PathBuf,
+}
+
+impl DurableWorkspaceLock {
+    /// Acquire `<workspace>/.jarvis/locks/<task_id>.lock`. Returns
+    /// Err with kind AlreadyExists when a lock file is present.
+    pub fn acquire(workspace: &Path, task_id: &str) -> Result<Self> {
+        let dir = workspace.join(".jarvis").join("locks");
+        std::fs::create_dir_all(&dir).with_context(|| {
+            format!("creating lock dir {}", dir.display())
+        })?;
+        let path = dir.join(format!("{task_id}.lock"));
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| anyhow!("acquire lock {}: {}", path.display(), e))?;
+        let pid = std::process::id();
+        let now_ts = chrono::Utc::now().to_rfc3339();
+        writeln!(f, "{{\"task_id\":\"{task_id}\",\"pid\":{pid},\"acquired_at\":\"{now_ts}\"}}")?;
+        Ok(Self { path })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Sweep the locks directory for files older than `max_age` and
+    /// remove them. Returns the count of files removed.
+    pub fn clear_stale_locks(workspace: &Path, max_age: std::time::Duration) -> Result<u32> {
+        let dir = workspace.join(".jarvis").join("locks");
+        if !dir.exists() {
+            return Ok(0);
+        }
+        let mut removed = 0u32;
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            let modified = metadata.modified().unwrap_or(SystemTime::now());
+            if SystemTime::now()
+                .duration_since(modified)
+                .map(|d| d > max_age)
+                .unwrap_or(false)
+            {
+                if let Err(e) = std::fs::remove_file(entry.path()) {
+                    if e.kind() != ErrorKind::NotFound {
+                        return Err(e.into());
+                    }
+                }
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+}
+
+impl Drop for DurableWorkspaceLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}

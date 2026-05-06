@@ -61,7 +61,7 @@ crates/
                         growth events / growth artifacts
 ```
 
-**186 unit tests pass** across the workspace.
+**197 unit tests pass** across the workspace.
 
 ---
 
@@ -131,18 +131,18 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 
 ```
 jarvis-core         13 tests
-jarvis-db           15 tests   (+2: provenance replay + trace events)
+jarvis-db           15 tests
 jarvis-memory       36 tests
 jarvis-tools         8 tests
-jarvis-growth       17 tests
-jarvis-orchestrator 52 tests   (+4: soft ack/escalate, hard close,
-                               async tag)
-jarvis-router       36 tests   (+3: judge override, judge None →
-                               fallback_used, mention_override resists
-                               judge override)
+jarvis-growth       21 tests   (+4: skill round-trip + match,
+                               regression-runner pass + fail)
+jarvis-orchestrator 59 tests   (+7: steer adapter append+drain,
+                               admissibility (override / empty / ok),
+                               durable lock exclusive + drop + sweep)
+jarvis-router       36 tests
 jarvis-control       9 tests
 ─────────────────
-TOTAL              186 tests
+TOTAL              197 tests
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,
@@ -195,11 +195,18 @@ etc.
 - ✅ commands.json catalogue + CommandRunner state machine
   (Section 8.17) — defaults catalogue covers 6 of the 7 PRD commands
 - ✅ Pluggable `LlmJudge` trait + `RuleBasedJudge` fallback (Section 5.4
-  + 5.5). Concrete network-backed adapters live in dedicated crates so
-  the router stays provider-agnostic.
+  + 5.5) and `Router::route_with_judge` integration.
 - ✅ `SubAgentDriver` trait + `InProcessDriver` + `SubAgentDispatcher`
-  glue (Section 8.6 / 9.4). Drives a `SubTaskEnvelope` through any
-  driver and persists the lifecycle (sub_channel + task_node status).
+  glue (Section 8.6 / 9.4).
+- ✅ Soft / hard / async interrupt protocol with auto-escalation
+  (Section 8.11.6).
+- ✅ Provenance / time-point replay (Section 15.7.5) + CLI surface
+  (`jarvis trace` / `jarvis replay`).
+- ✅ Skill registry + Regression Runner (Sections 18 / 16.7) — runner
+  is sandboxed against a `MockToolRuntime` per the PRD.
+- ✅ Steer adapter trait + RecordingAdapter + `admissibility_check`
+  for protocol-level safety guards (Section 9.11.5).
+- ✅ DurableWorkspaceLock (cross-process file lock + stale sweep).
 
 ### v1.0
 - Growth Dashboard, multi-device sync, Qdrant / pgvector,

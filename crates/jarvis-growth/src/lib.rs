@@ -18,12 +18,17 @@ pub mod collector;
 pub mod event;
 pub mod model_policy;
 pub mod promotion;
+pub mod skill;
 
 pub use artifact::*;
 pub use collector::*;
 pub use event::*;
 pub use model_policy::*;
 pub use promotion::*;
+pub use skill::{
+    new_skill, MockToolRuntime, RegressionRunner, ReplayReport, RiskLevel, Skill,
+    SkillRegistry, SkillStatus, SkillStep, VerificationStep,
+};
 
 #[cfg(test)]
 mod tests;

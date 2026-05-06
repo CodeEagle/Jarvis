@@ -555,6 +555,30 @@ CREATE TABLE IF NOT EXISTS command_executions (
 
 CREATE INDEX IF NOT EXISTS idx_command_exec_session
     ON command_executions (session_id, started_at DESC);
+
+-- ─── skills (Section 21.9) ─────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS skills (
+    id                TEXT PRIMARY KEY,
+    name              TEXT NOT NULL UNIQUE,
+    description       TEXT NOT NULL DEFAULT '',
+    trigger_intents_json TEXT NOT NULL DEFAULT '[]',
+    trigger_entities_json TEXT NOT NULL DEFAULT '[]',
+    required_tools_json TEXT NOT NULL DEFAULT '[]',
+    risk_level        TEXT NOT NULL DEFAULT 'low',
+    steps_json        TEXT NOT NULL DEFAULT '[]',
+    verification_json TEXT NOT NULL DEFAULT '[]',
+    success_count     INTEGER NOT NULL DEFAULT 0,
+    failure_count     INTEGER NOT NULL DEFAULT 0,
+    status            TEXT NOT NULL DEFAULT 'candidate',
+    evidence_trace_ids_json TEXT NOT NULL DEFAULT '[]',
+    version           INTEGER NOT NULL DEFAULT 1,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_skills_status
+    ON skills (status, name);
 "#;
 
 pub fn run(conn: &Connection) -> DbResult<()> {

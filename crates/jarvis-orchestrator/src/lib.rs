@@ -14,6 +14,7 @@ pub mod dispatch;
 pub mod interrupt;
 pub mod regression;
 pub mod steer;
+pub mod steer_adapter;
 pub mod sub_task;
 pub mod task_tree;
 pub mod tentacle;
@@ -36,6 +37,10 @@ pub use interrupt::{
     InterruptController, InterruptKind, InterruptOutcome, InterruptPolicy,
 };
 pub use steer::*;
+pub use steer_adapter::{
+    admissibility_check, AdapterError, AdapterMode, AdapterPayload, RecordingAdapter,
+    SteerAdapter,
+};
 pub use sub_task::*;
 pub use task_tree::*;
 pub use tentacle::*;

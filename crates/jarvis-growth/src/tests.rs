@@ -280,6 +280,106 @@ fn budget_never_deviates_more_than_40_percent() {
     assert!(new <= (8000.0 * 1.4) as u32);
 }
 
+// ── skill registry + regression runner ─────────────────────────────────
+
+#[test]
+fn skill_round_trip_through_registry() {
+    use jarvis_db::Db;
+    use skill::*;
+
+    let db = Db::in_memory().unwrap();
+    let reg = SkillRegistry::new(db);
+    let mut s = new_skill("diagnose_openwrt_dns", "排查 OpenWrt DNS");
+    s.trigger_intents = vec!["devops.networking".into()];
+    s.required_tools = vec!["read_file".into(), "shell.exec".into()];
+    s.steps = vec![SkillStep {
+        action: "check_dnsmasq".into(),
+        tool: Some("read_file".into()),
+        args_json: Some("{\"path\":\"/etc/dnsmasq.conf\"}".into()),
+    }];
+    s.status = SkillStatus::Promoted;
+    reg.upsert(&s).unwrap();
+    let back = reg.get(&s.id).unwrap().unwrap();
+    assert_eq!(back.name, "diagnose_openwrt_dns");
+    assert_eq!(back.required_tools.len(), 2);
+}
+
+#[test]
+fn skill_match_filters_by_intent_overlap() {
+    use jarvis_db::Db;
+    use skill::*;
+
+    let db = Db::in_memory().unwrap();
+    let reg = SkillRegistry::new(db);
+    let mut a = new_skill("a", "");
+    a.trigger_intents = vec!["devops.".into()];
+    a.status = SkillStatus::Promoted;
+    let mut b = new_skill("b", "");
+    b.trigger_intents = vec!["coding.".into()];
+    b.status = SkillStatus::Promoted;
+    let mut candidate = new_skill("c", "");
+    candidate.trigger_intents = vec!["devops.".into()];
+    // candidate stays Candidate → must be filtered out.
+    reg.upsert(&a).unwrap();
+    reg.upsert(&b).unwrap();
+    reg.upsert(&candidate).unwrap();
+    let hits = reg.match_skills("devops.networking", &[], 5).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].name, "a");
+}
+
+struct StaticMock;
+impl skill::MockToolRuntime for StaticMock {
+    fn invoke(&self, _tool: &str, _args: Option<&str>) -> Option<String> {
+        Some("mocked".into())
+    }
+}
+
+#[test]
+fn regression_runner_replays_steps_against_mock() {
+    use skill::*;
+    let mut s = new_skill("x", "x");
+    s.steps = vec![
+        SkillStep {
+            action: "step1".into(),
+            tool: Some("read_file".into()),
+            args_json: None,
+        },
+        SkillStep {
+            action: "step2".into(),
+            tool: Some("shell.exec".into()),
+            args_json: None,
+        },
+    ];
+    let runner = RegressionRunner::new(&StaticMock);
+    let report = runner.replay(&s);
+    assert_eq!(report.steps_attempted, 2);
+    assert_eq!(report.steps_matched, 2);
+    assert!(report.failures.is_empty());
+}
+
+struct EmptyMock;
+impl skill::MockToolRuntime for EmptyMock {
+    fn invoke(&self, _tool: &str, _args: Option<&str>) -> Option<String> {
+        None
+    }
+}
+
+#[test]
+fn regression_runner_fails_when_mock_has_no_expectation() {
+    use skill::*;
+    let mut s = new_skill("y", "y");
+    s.steps = vec![SkillStep {
+        action: "step1".into(),
+        tool: Some("read_file".into()),
+        args_json: None,
+    }];
+    let runner = RegressionRunner::new(&EmptyMock);
+    let report = runner.replay(&s);
+    assert_eq!(report.steps_matched, 0);
+    assert_eq!(report.failures.len(), 1);
+}
+
 #[test]
 fn apply_block_keeps_candidate_status() {
     let mut art = candidate(ArtifactType::SkillCandidate);
