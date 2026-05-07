@@ -1,0 +1,99 @@
+name: macos-app
+
+# Builds the SwiftUI desktop app on a real macOS runner. Triggered by
+# changes under desktop/macos/ or by manual workflow_dispatch.
+#
+# The build is unsigned (no Apple Developer account in CI). Users
+# downloading the artifact will need to clear the Gatekeeper quarantine
+# attribute — see desktop/macos/README.md.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+    paths:
+      - 'desktop/macos/**'
+      - '.github/workflows/macos-app.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build JarvisMac (unsigned)
+    runs-on: macos-14
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: desktop/macos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build (Release, unsigned)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Jarvis.xcodeproj \
+            -scheme JarvisMac \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            CODE_SIGN_ENTITLEMENTS= \
+            build | xcpretty || true
+          # Even with xcpretty, surface the real exit code:
+          xcodebuild \
+            -project Jarvis.xcodeproj \
+            -scheme JarvisMac \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            CODE_SIGN_ENTITLEMENTS= \
+            -showBuildSettings | head -20
+
+      - name: Locate built .app
+        id: locate
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find build/Build/Products/Release -maxdepth 2 -name '*.app' | head -1)
+          if [[ -z "$APP_PATH" ]]; then
+            echo "::error::no .app bundle found under build/Build/Products/Release"
+            ls -R build/Build/Products || true
+            exit 1
+          fi
+          echo "Found: $APP_PATH"
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "app_dir=$(dirname "$APP_PATH")" >> "$GITHUB_OUTPUT"
+          echo "app_name=$(basename "$APP_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Zip .app bundle
+        run: |
+          set -euo pipefail
+          cd "${{ steps.locate.outputs.app_dir }}"
+          ditto -c -k --keepParent "${{ steps.locate.outputs.app_name }}" "$GITHUB_WORKSPACE/JarvisMac.zip"
+          ls -lh "$GITHUB_WORKSPACE/JarvisMac.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JarvisMac-${{ github.sha }}
+          path: ${{ github.workspace }}/JarvisMac.zip
+          retention-days: 30
+          if-no-files-found: error
