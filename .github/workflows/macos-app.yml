@@ -103,6 +103,9 @@ jobs:
             ls -R build/Build/Products || true
             exit 1
           fi
+          # Emit absolute paths so downstream steps don't care which
+          # working-directory they happen to run from.
+          APP_PATH=$(realpath "$APP_PATH")
           echo "Found: $APP_PATH"
           echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
           echo "app_dir=$(dirname "$APP_PATH")" >> "$GITHUB_OUTPUT"
