@@ -673,6 +673,14 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
     vector_json TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+
+-- ─── persona (single-row per scope; macOS API parity) ──────────────────
+
+CREATE TABLE IF NOT EXISTS personas (
+    scope        TEXT PRIMARY KEY,
+    content_json TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
 "#;
 
 pub fn run(conn: &Connection) -> DbResult<()> {

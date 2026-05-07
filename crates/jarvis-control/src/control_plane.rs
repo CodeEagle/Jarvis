@@ -57,6 +57,71 @@ impl ControlPlane {
         self.router.clone()
     }
 
+    /// Same as `handle_user_input` but consults an external `LlmJudge`
+    /// before settling the decision. Used by the chat REPL when the
+    /// caller has selected a non-rule judge (e.g. `JARVIS_JUDGE=codex`).
+    ///
+    /// The judge's wall-clock cost (e.g. ~13s for codex) typically
+    /// exceeds the default 2s SLA, so callers should either pass a
+    /// generous SLA via [`ControlPlane::with_sla`] or accept that the
+    /// user sees a fallback ack while the judge is still working.
+    pub async fn handle_user_input_with_judge<J>(
+        &self,
+        user_input: String,
+        session_id_hint: Option<String>,
+        running_agent_types: Vec<String>,
+        judge: std::sync::Arc<J>,
+    ) -> HandledResponse
+    where
+        J: jarvis_router::LlmJudge + 'static,
+    {
+        let started = Instant::now();
+        let router = self.router.clone();
+        let budget = self.sla.fallback_ack;
+
+        let task = tokio::spawn(async move {
+            router
+                .route_with_judge(
+                    RouterInput {
+                        user_input: &user_input,
+                        session_id_hint: session_id_hint.as_deref(),
+                        running_agent_types: &running_agent_types,
+                    },
+                    &*judge,
+                )
+                .await
+        });
+
+        match timeout(budget, task).await {
+            Ok(Ok(Ok((decision, diag)))) => HandledResponse::Resolved {
+                kind: classify(&decision),
+                decision: Box::new(decision),
+                diagnostics_summary: summarize(&diag),
+                elapsed_ms: started.elapsed().as_millis(),
+            },
+            Ok(Ok(Err(e))) => HandledResponse::Fallback {
+                message: format!(
+                    "{} (router error: {})",
+                    fallback_message(TaskPlaneState::Stuck, None),
+                    e
+                ),
+                elapsed_ms: started.elapsed().as_millis(),
+            },
+            Ok(Err(join_err)) => HandledResponse::Fallback {
+                message: format!(
+                    "{} (task plane crashed: {})",
+                    fallback_message(TaskPlaneState::Stuck, None),
+                    join_err
+                ),
+                elapsed_ms: started.elapsed().as_millis(),
+            },
+            Err(_timeout) => HandledResponse::Fallback {
+                message: fallback_message(TaskPlaneState::Executing, None),
+                elapsed_ms: started.elapsed().as_millis(),
+            },
+        }
+    }
+
     /// Handle a user input under the SLA budget.
     pub async fn handle_user_input(
         &self,

@@ -290,6 +290,51 @@ async fn replicator_stops_on_peer_error_without_marking_delivered() {
 }
 
 #[tokio::test]
+async fn control_plane_with_judge_takes_judge_outcome() {
+    use std::sync::Arc;
+    struct StubJudge;
+    #[async_trait::async_trait]
+    impl jarvis_router::LlmJudge for StubJudge {
+        async fn judge(
+            &self,
+            _inputs: jarvis_router::JudgeInputs<'_>,
+        ) -> Option<jarvis_router::JudgeOutcome> {
+            Some(jarvis_router::JudgeOutcome {
+                primary_intent: "research.web_search".into(),
+                secondary_intents: vec![],
+                domain: "research".into(),
+                topic: "x".into(),
+                session_action: jarvis_core::route::SessionAction::CreateNew,
+                agent_type: "research".into(),
+                confidence: 0.97,
+                clarification_needed: false,
+                router_notes: "stub judge".into(),
+            })
+        }
+    }
+    let db = Db::in_memory().unwrap();
+    let cp = ControlPlane::new(db);
+    let resp = cp
+        .handle_user_input_with_judge(
+            "openwrt 报错".into(),
+            None,
+            vec![],
+            Arc::new(StubJudge),
+        )
+        .await;
+    match resp {
+        HandledResponse::Resolved { decision, .. } => {
+            assert_eq!(decision.agent_type, "research");
+            assert!(decision.router_notes.contains("stub judge"));
+            assert!(!decision.fallback_used);
+        }
+        HandledResponse::Fallback { message, .. } => {
+            panic!("expected Resolved, got Fallback: {message}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn control_plane_falls_back_when_budget_too_tight() {
     // Set fallback budget to 1ms so the router can't beat it.
     let db = Db::in_memory().unwrap();

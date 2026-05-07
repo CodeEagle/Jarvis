@@ -95,6 +95,211 @@ fn cmd_memory_write_and_list_round_trip() {
 }
 
 #[test]
+fn cmd_memory_search_ranks_query_relevant_first() {
+    let db = fresh_db();
+    cmd_memory_write(&db, "用户偏好函数式编程", "global").unwrap();
+    cmd_memory_write(&db, "周末喜欢做菜", "global").unwrap();
+    let lines = cmd_memory_search(&db, "global", "函数式", 5).unwrap();
+    assert!(!lines.is_empty(), "expected hits for '函数式'");
+    assert!(lines[0].contains("函数式"), "top hit should match query: {lines:?}");
+}
+
+#[test]
+fn cmd_memory_search_rejects_empty_query() {
+    let db = fresh_db();
+    let err = cmd_memory_search(&db, "global", "   ", 5).unwrap_err();
+    matches!(err, CmdError::MissingArg(_))
+        .then_some(())
+        .expect("expected MissingArg");
+}
+
+#[test]
+fn cmd_memory_forget_marks_deprecated_and_logs_change() {
+    let db = fresh_db();
+    let written = cmd_memory_write(&db, "to be forgotten", "global").unwrap();
+    let id = written
+        .split_whitespace()
+        .nth(1)
+        .expect("wrote <id> ...")
+        .to_string();
+    let out = cmd_memory_forget(&db, &id, Some("user requested")).unwrap();
+    assert!(out.contains("deprecated"));
+    // List excludes deprecated memories.
+    let listed = cmd_memory_list(&db, "global").unwrap();
+    assert!(
+        !listed.iter().any(|l| l.contains("forgotten")),
+        "deprecated memory should not be listed: {listed:?}"
+    );
+    // History records the deprecation.
+    let history = cmd_memory_history(&db, &id).unwrap();
+    assert!(
+        history.iter().any(|l| l.contains("deprecated")),
+        "history should record the deprecate event: {history:?}"
+    );
+}
+
+#[test]
+fn cmd_memory_forget_returns_error_for_unknown_id() {
+    let db = fresh_db();
+    let err = cmd_memory_forget(&db, "mem_does_not_exist", None).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("not found"), "got: {msg}");
+}
+
+#[tokio::test]
+async fn cmd_judge_probe_reports_outcome_for_stub_judge() {
+    struct OkJudge;
+    #[async_trait::async_trait]
+    impl jarvis_router::LlmJudge for OkJudge {
+        async fn judge(
+            &self,
+            _inputs: jarvis_router::JudgeInputs<'_>,
+        ) -> Option<jarvis_router::JudgeOutcome> {
+            Some(jarvis_router::JudgeOutcome {
+                primary_intent: "chat".into(),
+                secondary_intents: vec![],
+                domain: "chat".into(),
+                topic: "x".into(),
+                session_action: jarvis_core::route::SessionAction::CreateNew,
+                agent_type: "general".into(),
+                confidence: 0.7,
+                clarification_needed: false,
+                router_notes: "probe ok".into(),
+            })
+        }
+    }
+    let line = cmd_judge_probe(&OkJudge).await.unwrap();
+    assert!(line.contains("judge probe ok"));
+    assert!(line.contains("agent=general"));
+}
+
+#[tokio::test]
+async fn cmd_judge_probe_returns_err_when_adapter_unavailable() {
+    struct DownJudge;
+    #[async_trait::async_trait]
+    impl jarvis_router::LlmJudge for DownJudge {
+        async fn judge(
+            &self,
+            _inputs: jarvis_router::JudgeInputs<'_>,
+        ) -> Option<jarvis_router::JudgeOutcome> {
+            None
+        }
+    }
+    let err = cmd_judge_probe(&DownJudge).await.unwrap_err();
+    assert!(err.to_string().contains("FAILED"));
+}
+
+#[test]
+fn cmd_sessions_new_creates_active_session() {
+    let db = fresh_db();
+    let out = cmd_sessions_new(&db, "Test Session", "coding").unwrap();
+    assert!(out.starts_with("created sess_"));
+    let listed = cmd_sessions_list(&db).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].contains("Test Session"));
+    assert!(listed[0].contains("domain=coding"));
+}
+
+#[test]
+fn cmd_sessions_new_rejects_empty_title() {
+    let db = fresh_db();
+    let err = cmd_sessions_new(&db, "  ", "coding").unwrap_err();
+    matches!(err, CmdError::MissingArg(_))
+        .then_some(())
+        .expect("expected MissingArg");
+}
+
+#[test]
+fn cmd_sessions_archive_hides_from_list() {
+    let db = fresh_db();
+    seed_session(&db, "sess_to_archive");
+    let lines_before = cmd_sessions_list(&db).unwrap();
+    assert_eq!(lines_before.len(), 1);
+    let out = cmd_sessions_archive(&db, "sess_to_archive").unwrap();
+    assert!(out.contains("archived"));
+    let lines_after = cmd_sessions_list(&db).unwrap();
+    assert!(
+        lines_after.is_empty(),
+        "archived session should not appear: {lines_after:?}"
+    );
+    // Idempotent.
+    let again = cmd_sessions_archive(&db, "sess_to_archive").unwrap();
+    assert!(again.contains("already archived"));
+}
+
+#[test]
+fn cmd_sessions_archive_unknown_id_errors() {
+    let db = fresh_db();
+    let err = cmd_sessions_archive(&db, "sess_nope").unwrap_err();
+    assert!(err.to_string().contains("not found"));
+}
+
+#[test]
+fn cmd_persona_get_returns_empty_marker_when_absent() {
+    let db = fresh_db();
+    let line = cmd_persona_get(&db, "global").unwrap();
+    assert!(line.contains("(no persona"));
+}
+
+#[test]
+fn cmd_persona_set_get_round_trip_json() {
+    let db = fresh_db();
+    cmd_persona_set(&db, "global", r#"{"name":"jarvis","style":"terse"}"#).unwrap();
+    let got = cmd_persona_get(&db, "global").unwrap();
+    assert!(got.contains("scope=global"));
+    assert!(got.contains("\"name\":\"jarvis\""));
+}
+
+#[test]
+fn cmd_persona_set_wraps_plain_text_as_json_string() {
+    let db = fresh_db();
+    cmd_persona_set(&db, "global", "easygoing assistant").unwrap();
+    let got = cmd_persona_get(&db, "global").unwrap();
+    // Plain text should round-trip as a JSON string literal.
+    assert!(got.contains("\"easygoing assistant\""));
+}
+
+#[test]
+fn cmd_persona_set_rejects_empty_content() {
+    let db = fresh_db();
+    let err = cmd_persona_set(&db, "global", "  ").unwrap_err();
+    matches!(err, CmdError::MissingArg(_))
+        .then_some(())
+        .expect("expected MissingArg");
+}
+
+#[test]
+fn cmd_activity_cards_lists_session_cards() {
+    let db = fresh_db();
+    seed_session(&db, "sess_cards");
+    let store = jarvis_orchestrator::activity_card::ActivityCardStore::new(db.clone());
+    store
+        .create(jarvis_orchestrator::activity_card::CardDraft {
+            session_id: "sess_cards",
+            sub_task_id: None,
+            trace_id: None,
+            agent_type: "coding",
+            agent_display_name: "Coder",
+            agent_avatar_emoji: "🛠",
+            title: "fixing the bug",
+        })
+        .unwrap();
+    let lines = cmd_activity_cards(&db, "sess_cards").unwrap();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("agent=coding"));
+    assert!(lines[0].contains("fixing the bug"));
+}
+
+#[test]
+fn cmd_activity_cards_rejects_empty_session() {
+    let db = fresh_db();
+    let err = cmd_activity_cards(&db, "  ").unwrap_err();
+    matches!(err, CmdError::MissingArg(_))
+        .then_some(())
+        .expect("expected MissingArg");
+}
+
+#[test]
 fn cmd_memory_write_rejects_empty_content() {
     let db = fresh_db();
     let err = cmd_memory_write(&db, "   ", "global").unwrap_err();

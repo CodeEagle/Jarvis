@@ -684,6 +684,7 @@ name = "jarvis-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "jarvis-api",
  "jarvis-codex",

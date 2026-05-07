@@ -37,6 +37,41 @@ pub fn cmd_route(db: &Db, input: &str) -> Result<String, CmdError> {
         .map_err(|e| CmdError::Router(e.to_string()))
 }
 
+/// Probe an `LlmJudge` adapter end-to-end: send a fixed canned input,
+/// measure wall-clock latency, and report whether a coherent
+/// `JudgeOutcome` came back. Designed to surface auth / binary /
+/// network problems before they manifest as silent rule fallbacks
+/// during a real `route` call.
+pub async fn cmd_judge_probe<J>(judge: &J) -> Result<String, CmdError>
+where
+    J: jarvis_router::LlmJudge,
+{
+    let started = std::time::Instant::now();
+    let allowed = vec!["coding".to_string(), "general".to_string()];
+    let outcome = judge
+        .judge(jarvis_router::JudgeInputs {
+            user_input: "probe: please return any valid RouteDecision",
+            trace_id: "trc-probe",
+            task_id: "t-probe",
+            rule_hints: &[],
+            recent_session_titles: &[],
+            allowed_agents: &allowed,
+        })
+        .await;
+    let elapsed_ms = started.elapsed().as_millis();
+    match outcome {
+        Some(o) => Ok(format!(
+            "judge probe ok ({elapsed_ms}ms): agent={} confidence={:.2} fallback_used=false notes={}",
+            o.agent_type,
+            o.confidence,
+            render::truncate(&o.router_notes, 120),
+        )),
+        None => Err(CmdError::Router(format!(
+            "judge probe FAILED after {elapsed_ms}ms: adapter returned None (auth / binary / network?)"
+        ))),
+    }
+}
+
 /// Async variant that consults an external `LlmJudge`. Used by the
 /// `JARVIS_JUDGE=codex` (or other adapter) path on the CLI.
 pub async fn cmd_route_with_judge<J>(
@@ -106,6 +141,65 @@ pub fn cmd_memory_list(db: &Db, scope: &str) -> Result<Vec<String>, CmdError> {
             )
         })
         .collect())
+}
+
+pub fn cmd_memory_search(
+    db: &Db,
+    scope: &str,
+    query: &str,
+    top_k: usize,
+) -> Result<Vec<String>, CmdError> {
+    if query.trim().is_empty() {
+        return Err(CmdError::MissingArg("memory search query"));
+    }
+    let r = jarvis_memory::Retrieval::new(db.clone());
+    let hits = r.retrieve(scope, query, None, top_k, 0.0)?;
+    Ok(hits
+        .into_iter()
+        .map(|h| {
+            format!(
+                "{:>8.3}  trust={:.2}  [{}] {}  id={}",
+                h.hybrid_score,
+                h.trust_now,
+                h.memory.r#type.as_str(),
+                render::truncate(&h.memory.content, 80),
+                h.memory.id,
+            )
+        })
+        .collect())
+}
+
+/// Mark a memory as `Deprecated` and emit a Deprecated entry in
+/// `memory_change_log`. Mirrors the planned `POST /memory/{id}/forget`
+/// API. Returns Err if the id doesn't exist.
+pub fn cmd_memory_forget(
+    db: &Db,
+    id: &str,
+    reason: Option<&str>,
+) -> Result<String, CmdError> {
+    if id.trim().is_empty() {
+        return Err(CmdError::MissingArg("memory id"));
+    }
+    let mut mem = jarvis_db::memory_repo::get(db, id)?
+        .ok_or_else(|| CmdError::Router(format!("memory not found: {id}")))?;
+    if mem.status == jarvis_core::memory::MemoryStatus::Deprecated {
+        return Ok(format!("memory {id} already deprecated"));
+    }
+    mem.status = jarvis_core::memory::MemoryStatus::Deprecated;
+    mem.updated_at = jarvis_core::time::now();
+    jarvis_db::memory_repo::upsert(
+        db,
+        &mem,
+        jarvis_db::memory_repo::WriteOpts {
+            change_type: jarvis_core::memory::MemoryChangeType::Deprecated,
+            source_module: Some("cli"),
+            reason,
+        },
+    )?;
+    Ok(format!(
+        "deprecated {id} (reason={})",
+        reason.unwrap_or("(none)")
+    ))
 }
 
 pub fn cmd_raw_log(db: &Db, session_id: &str, limit: usize) -> Result<Vec<String>, CmdError> {
@@ -184,6 +278,112 @@ pub fn cmd_memory_history(db: &Db, memory_id: &str) -> Result<Vec<String>, CmdEr
         ));
     }
     Ok(out)
+}
+
+/// Create a new active session with a generated id. Mirrors the
+/// macOS-desktop wishlist `POST /sessions` API.
+pub fn cmd_sessions_new(
+    db: &Db,
+    title: &str,
+    domain: &str,
+) -> Result<String, CmdError> {
+    if title.trim().is_empty() {
+        return Err(CmdError::MissingArg("session title"));
+    }
+    let now = jarvis_core::time::now();
+    let id = jarvis_core::ids::new_id_with_prefix("sess");
+    let sess = jarvis_core::session::Session {
+        id: id.clone(),
+        title: title.into(),
+        domain: domain.into(),
+        topic: String::new(),
+        summary: String::new(),
+        long_summary: String::new(),
+        active_entities: vec![],
+        unresolved: vec![],
+        resolved: vec![],
+        recent_message_ids: vec![],
+        memory_refs: vec![],
+        skill_refs: vec![],
+        status: jarvis_core::session::SessionStatus::Active,
+        created_at: now,
+        updated_at: now,
+        last_active_at: now,
+    };
+    jarvis_db::session_repo::upsert_session(db, &sess)?;
+    Ok(format!("created {id} title={title:?} domain={domain}"))
+}
+
+/// Move a session into the `archived` state so it stops showing up in
+/// `sessions list`. Idempotent. Mirrors `DELETE /sessions/{id}` (we
+/// archive instead of hard-delete to preserve audit history).
+pub fn cmd_sessions_archive(db: &Db, id: &str) -> Result<String, CmdError> {
+    if id.trim().is_empty() {
+        return Err(CmdError::MissingArg("session id"));
+    }
+    let mut sess = jarvis_db::session_repo::get_session(db, id)?
+        .ok_or_else(|| CmdError::Router(format!("session not found: {id}")))?;
+    if sess.status == jarvis_core::session::SessionStatus::Archived {
+        return Ok(format!("session {id} already archived"));
+    }
+    sess.status = jarvis_core::session::SessionStatus::Archived;
+    sess.updated_at = jarvis_core::time::now();
+    jarvis_db::session_repo::upsert_session(db, &sess)?;
+    Ok(format!("archived {id}"))
+}
+
+pub fn cmd_persona_get(db: &Db, scope: &str) -> Result<String, CmdError> {
+    match jarvis_db::persona_repo::get(db, scope)? {
+        Some(p) => Ok(format!(
+            "scope={} updated_at={} content={}",
+            p.scope,
+            p.updated_at.to_rfc3339(),
+            p.content_json
+        )),
+        None => Ok(format!("(no persona for scope={scope})")),
+    }
+}
+
+pub fn cmd_persona_set(
+    db: &Db,
+    scope: &str,
+    content: &str,
+) -> Result<String, CmdError> {
+    if content.trim().is_empty() {
+        return Err(CmdError::MissingArg("persona content"));
+    }
+    // Accept either raw JSON or arbitrary text; if text, wrap as JSON
+    // so consumers always parse the same way.
+    let content_json = match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(_) => content.to_string(),
+        Err(_) => serde_json::Value::String(content.to_string()).to_string(),
+    };
+    jarvis_db::persona_repo::upsert(db, scope, &content_json)?;
+    Ok(format!("persona scope={scope} updated"))
+}
+
+pub fn cmd_activity_cards(
+    db: &Db,
+    session_id: &str,
+) -> Result<Vec<String>, CmdError> {
+    if session_id.trim().is_empty() {
+        return Err(CmdError::MissingArg("session id"));
+    }
+    let store = jarvis_orchestrator::activity_card::ActivityCardStore::new(db.clone());
+    let cards = store.list_for_session(session_id)?;
+    Ok(cards
+        .into_iter()
+        .map(|c| {
+            format!(
+                "{}  agent={}  status={}  title={}  started_at={}",
+                c.id,
+                c.agent_type,
+                c.status.as_str(),
+                render::truncate(&c.title, 60),
+                c.started_at.to_rfc3339(),
+            )
+        })
+        .collect())
 }
 
 pub fn cmd_sessions_list(db: &Db) -> Result<Vec<String>, CmdError> {

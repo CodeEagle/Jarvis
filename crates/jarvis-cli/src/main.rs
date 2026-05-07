@@ -95,7 +95,47 @@ async fn main() -> anyhow::Result<()> {
                         println!("{line}");
                     }
                 }
+                Some("new") => {
+                    let title = args.get(3).cloned().unwrap_or_default();
+                    let domain = args.get(4).cloned().unwrap_or_else(|| "general".into());
+                    println!("{}", jarvis_cli::cmd_sessions_new(&db, &title, &domain)?);
+                }
+                Some("archive") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    println!("{}", jarvis_cli::cmd_sessions_archive(&db, &id)?);
+                }
                 Some(other) => anyhow::bail!("unknown sessions subcommand: {other}"),
+            }
+        }
+        Some("persona") => {
+            let sub = args.get(2).map(String::as_str);
+            let scope = args
+                .iter()
+                .position(|a| a == "--scope")
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+                .unwrap_or_else(|| "global".into());
+            match sub {
+                Some("get") | None => {
+                    println!("{}", jarvis_cli::cmd_persona_get(&db, &scope)?);
+                }
+                Some("set") => {
+                    let content = args
+                        .iter()
+                        .skip(3)
+                        .filter(|a| a.as_str() != "--scope" && *a != &scope)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    println!("{}", jarvis_cli::cmd_persona_set(&db, &scope, &content)?);
+                }
+                Some(other) => anyhow::bail!("unknown persona subcommand: {other}"),
+            }
+        }
+        Some("activity-cards") => {
+            let session = args.get(2).cloned().unwrap_or_default();
+            for line in jarvis_cli::cmd_activity_cards(&db, &session)? {
+                println!("{line}");
             }
         }
         Some("skills") => {
@@ -137,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
         Some("serve") => serve_command(db, &args[2..]).await?,
         Some("maintenance") => maintenance_command(db, &args[2..]).await?,
         Some("demo") => demo_command(db).await?,
+        Some("judge") => judge_command(&args[2..]).await?,
         Some("--help") | Some("-h") | Some("help") | None => print_usage(),
         Some(other) => {
             eprintln!("unknown subcommand: {other}\n");
@@ -148,10 +189,36 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn chat_repl(db: Db) -> anyhow::Result<()> {
-    let cp = ControlPlane::new(db);
+    // When a non-rule judge is selected, codex calls easily exceed the
+    // default 2 s SLA. Bump fallback_ack so the REPL waits for the
+    // judge to settle (still bounded — tweak via JARVIS_FALLBACK_SECS).
+    let judge_kind = env::var("JARVIS_JUDGE").ok();
+    let sla = if judge_kind.as_deref() == Some("codex") {
+        let secs = env::var("JARVIS_FALLBACK_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(180);
+        let mut s = jarvis_control::sla::ResponseSla::defaults();
+        s.fallback_ack = std::time::Duration::from_secs(secs);
+        s
+    } else {
+        jarvis_control::sla::ResponseSla::defaults()
+    };
+    let cp = ControlPlane::with_sla(db, sla);
+    let codex_judge = if judge_kind.as_deref() == Some("codex") {
+        Some(std::sync::Arc::new(jarvis_codex::CodexJudge::new(
+            jarvis_codex::CodexConfig::from_env(),
+        )))
+    } else {
+        None
+    };
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    println!("Jarvis v0.1 — chat REPL. Type :quit to exit.");
+    let banner = match judge_kind.as_deref() {
+        Some("codex") => "Jarvis v0.1 — chat REPL [judge=codex]. Type :quit to exit.",
+        _ => "Jarvis v0.1 — chat REPL. Type :quit to exit.",
+    };
+    println!("{banner}");
 
     loop {
         print!("> ");
@@ -167,9 +234,18 @@ async fn chat_repl(db: Db) -> anyhow::Result<()> {
         if line == ":quit" {
             break;
         }
-        let resp = cp
-            .handle_user_input(line.to_string(), None, vec![])
-            .await;
+        let resp = match codex_judge.as_ref() {
+            Some(j) => {
+                cp.handle_user_input_with_judge(
+                    line.to_string(),
+                    None,
+                    vec![],
+                    j.clone(),
+                )
+                .await
+            }
+            None => cp.handle_user_input(line.to_string(), None, vec![]).await,
+        };
         match resp {
             jarvis_control::HandledResponse::Resolved {
                 decision,
@@ -220,8 +296,29 @@ fn memory_command(db: Db, args: &[String]) -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        Some("search") => {
+            let query = args
+                .iter()
+                .skip(1)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            for line in jarvis_cli::cmd_memory_search(&db, "global", &query, 20)? {
+                println!("{line}");
+            }
+        }
+        Some("forget") => {
+            let id = args
+                .get(1)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Usage: memory forget <id> [reason]"))?;
+            let reason = args.get(2).map(String::as_str);
+            println!("{}", jarvis_cli::cmd_memory_forget(&db, &id, reason)?);
+        }
         _ => {
-            println!("Usage: memory write <text> | memory list");
+            println!(
+                "Usage: memory write <text> | memory list | memory search <q> | memory forget <id> [reason]"
+            );
         }
     }
     Ok(())
@@ -418,6 +515,30 @@ fn memory_history_command(db: Db, args: &[String]) -> anyhow::Result<()> {
             h.source_module.as_deref().unwrap_or("-"),
             h.reason.as_deref().unwrap_or(""),
         );
+    }
+    Ok(())
+}
+
+async fn judge_command(args: &[String]) -> anyhow::Result<()> {
+    match args.first().map(String::as_str) {
+        Some("probe") | None => {
+            // Adapter selection mirrors `jarvis route`'s JARVIS_JUDGE.
+            let kind = env::var("JARVIS_JUDGE").unwrap_or_else(|_| "codex".into());
+            match kind.as_str() {
+                "codex" => {
+                    let judge = jarvis_codex::CodexJudge::new(
+                        jarvis_codex::CodexConfig::from_env(),
+                    );
+                    println!("{}", jarvis_cli::cmd_judge_probe(&judge).await?);
+                }
+                other => {
+                    anyhow::bail!(
+                        "unknown JARVIS_JUDGE={other:?}; supported: codex (set JARVIS_JUDGE=codex)"
+                    );
+                }
+            }
+        }
+        Some(other) => anyhow::bail!("Usage: judge probe; got {other:?}"),
     }
     Ok(())
 }
@@ -619,11 +740,20 @@ Routing & chat:
 Memory:
   jarvis memory write <text>           record a user-explicit memory
   jarvis memory list                   list memories in scope `global`
+  jarvis memory search <q>             hybrid-rank search across memories
+  jarvis memory forget <id> [reason]   deprecate a memory (audit-logged)
   jarvis memory-history <mem_id>       full memory_change_log for one memory
 
 Sessions:
   jarvis sessions list                 list active sessions
+  jarvis sessions new <title> [domain] create a new active session
+  jarvis sessions archive <id>         archive a session (idempotent)
   jarvis sessions messages <sess>      recent messages for a session
+  jarvis activity-cards <sess>         list activity cards for a session
+
+Persona:
+  jarvis persona get [--scope global]  print persona JSON
+  jarvis persona set <text|json> [--scope global]  upsert persona
   jarvis raw-log <session_id>          dump raw_event_log
   jarvis audit <session_id>            dump audit_log
   jarvis trace <trace_id>              raw events for a trace
@@ -642,6 +772,9 @@ Growth & maintenance:
   jarvis outbox                        outbox pending count
   jarvis maintenance [scope]           run Dream lint + cluster once
   jarvis dashboard [--json]            counters summary
+
+Provider:
+  jarvis judge probe                   verify selected JARVIS_JUDGE adapter is live
 
 Server / demo:
   jarvis serve [host:port]             start HTTP API (default 127.0.0.1:7777)
