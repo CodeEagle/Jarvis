@@ -72,7 +72,9 @@ crates/
                         growth / trace / replay / audit / maintenance / serve
 ```
 
-**287 unit tests pass** across the workspace.
+**352 unit + integration tests pass** across the workspace; an additional
+6 `#[ignore]`'d tests hit the live codex CLI for end-to-end LLM-judge
+verification.
 
 Tracking PRD **v1.8** (2026-05-04 spec). All v1.4–v1.8 changelog items
 are either implemented or have a concrete extension seam:
@@ -90,27 +92,203 @@ are either implemented or have a concrete extension seam:
 
 ---
 
-## Quickstart
+## Install
+
+### Option A — Pre-built binary (recommended)
+
+Grab the latest release for your OS:
 
 ```bash
-cargo build --release
-cargo test --workspace
+# Linux x86_64
+curl -L -o jarvis.tar.gz \
+  https://github.com/CodeEagle/Jarvis/releases/latest/download/jarvis-VERSION-x86_64-linux.tar.gz
 
-# route a single input through the rule layer
-JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效"
+# macOS Apple Silicon
+curl -L -o jarvis.tar.gz \
+  https://github.com/CodeEagle/Jarvis/releases/latest/download/jarvis-VERSION-aarch64-macos.tar.gz
 
-# interactive REPL through the Control Plane
-./target/release/jarvis chat
+# macOS Intel
+curl -L -o jarvis.tar.gz \
+  https://github.com/CodeEagle/Jarvis/releases/latest/download/jarvis-VERSION-x86_64-macos.tar.gz
 
-# record a long-term preference
-./target/release/jarvis memory write "用户偏好函数式风格"
+tar -xzf jarvis.tar.gz
+chmod +x jarvis
+sudo mv jarvis /usr/local/bin/      # optional, or just add to PATH
+jarvis --help
+```
 
-# inspect Growth Engine
-./target/release/jarvis growth events route_decision
-./target/release/jarvis growth artifacts
+Replace `VERSION` with the tag (e.g. `v0.1.0`). Each archive ships
+`jarvis` + the QA evidence directory. Each release also publishes
+`<archive>.sha256` you can verify with `shasum -a 256 -c <file>.sha256`.
 
-# inspect immutable raw event log for a session
-./target/release/jarvis raw-log sess_xxxx
+### Option B — Build from source
+
+```bash
+git clone https://github.com/CodeEagle/Jarvis.git
+cd Jarvis
+cargo build --release -p jarvis-cli
+./target/release/jarvis --help
+```
+
+Requires Rust ≥ 1.80. SQLite is statically linked
+(`rusqlite` bundled feature), no system SQLite needed.
+
+### Run the test suite
+
+```bash
+cargo test --workspace                                # 352 default tests
+cargo test -p jarvis-codex --lib -- --ignored         # 6 real codex e2e (needs codex login)
+```
+
+---
+
+## Quick start (5-minute tour)
+
+```bash
+# Pick a sqlite location. Defaults to ./jarvis.db.
+export JARVIS_DB="$HOME/.jarvis/jarvis.db"
+mkdir -p "$(dirname "$JARVIS_DB")"
+
+# 1. Route a single input through the rule-based Router
+jarvis route "OpenWrt DNS hosts 不生效"
+
+# 2. Create a persistent task session
+jarvis sessions new "Mirage 重构" coding
+jarvis sessions list
+jarvis sessions list --json                  # programmatic JSON output
+
+# 3. Record a long-term preference (Tier 1 user_explicit memory)
+jarvis memory write "用户偏好函数式编程"
+jarvis memory write "Mirage 项目用 Riverpod"
+jarvis memory list                           # rows include id, type, trust score
+jarvis memory search "vim" --json            # hybrid retrieval: fts + vector + jaccard
+
+# 4. Forget a memory (audit-logged, not hard-deleted)
+jarvis memory forget mem_abcdef0123 "privacy cleanup"
+jarvis memory-history mem_abcdef0123         # full change-log chain
+
+# 5. Persona — assistant tone + user profile
+jarvis persona set '{"style":"terse","language":"zh"}'
+jarvis persona get
+
+# 6. Inspect immutable logs (PRD §15.7)
+jarvis raw-log sess_abc123
+jarvis trace trc_xxxxxx                       # all events sharing one trace id
+jarvis trace-view trc_xxxxxx                  # pretty trace + audit
+jarvis audit sess_abc123 --json
+jarvis replay sess_abc123 2026-01-15T10:00:00Z   # point-in-time replay
+
+# 7. Interactive chat REPL (uses ControlPlane SLA + fallback)
+jarvis chat
+> openwrt 这个报错怎么办
+> :quit
+
+# 8. Run the periodic Dream pipeline manually
+jarvis maintenance global
+
+# 9. Health snapshot
+jarvis dashboard --json
+jarvis outbox
+
+# 10. List built-in quick-action commands (PRD §8.17)
+jarvis commands list
+jarvis commands run regression_check sess_abc123
+jarvis commands status cmd_xxxx
+```
+
+Per-subcommand help is consistent: `jarvis <cmd> --help` shows usage
+for any subcommand. `--json` is honored by `dashboard`, `sessions list`,
+`memory list/search`, `raw-log`, `audit`, `skills`, and `commands list`.
+
+---
+
+## Use a real LLM judge (codex / ChatGPT plan)
+
+Jarvis ships a subprocess adapter that drives the
+[OpenAI Codex CLI](https://www.npmjs.com/package/@openai/codex). When
+enabled, the Router consults a real model for high-confidence routing
+decisions before falling back to the rule layer.
+
+```bash
+# 1. Install codex
+npm install -g @openai/codex
+codex login --device-auth          # complete the device-auth flow once
+
+# 2. Verify the adapter is reachable end-to-end
+JARVIS_JUDGE=codex jarvis judge probe
+# → judge probe ok (~7s): agent=general confidence=0.95 ...
+
+# 3. Route through codex
+JARVIS_JUDGE=codex jarvis route "openwrt 编译报错 no rule to make target"
+# → agent_type=coding (rule layer would have said devops),
+#   router_notes contains both rule hint and judge reasoning
+
+# 4. Chat REPL with codex (SLA auto-bumps to 180s for codex calls)
+JARVIS_JUDGE=codex jarvis chat
+```
+
+Tunables:
+
+| Env | Default | Purpose |
+|---|---|---|
+| `JARVIS_JUDGE` | unset (rule-only) | `codex` to enable the codex adapter |
+| `CODEX_BINARY` | `codex` (PATH) | Override codex binary path |
+| `CODEX_MODEL` | codex's default | Pin a specific model id |
+| `CODEX_TIMEOUT_SECS` | `180` | Per-call hard deadline |
+| `JARVIS_FALLBACK_SECS` | `180` (with codex), `2` (rule) | Chat REPL fallback budget |
+
+If codex is unreachable, the Router transparently falls back to the
+rule layer and marks `fallback_used=true` — the call never panics.
+
+---
+
+## Run the HTTP API
+
+```bash
+jarvis serve 127.0.0.1:7777                  # blocks; Ctrl+C to stop
+
+# in another shell
+curl -s http://127.0.0.1:7777/healthz
+curl -s http://127.0.0.1:7777/dashboard/metrics | jq
+curl -s http://127.0.0.1:7777/sessions/recent | jq
+curl -s http://127.0.0.1:7777/conversation/sess_abc/ownership | jq
+
+# Server-Sent Events stream of raw_event_log for a session
+curl -N http://127.0.0.1:7777/sessions/sess_abc/stream
+
+# Send a route request via API
+curl -X POST http://127.0.0.1:7777/router/input \
+  -H 'content-type: application/json' \
+  -d '{"user_input":"openwrt 排错","session_id_hint":null}' | jq
+```
+
+A read-only dashboard at `http://127.0.0.1:7777/dashboard` polls the
+metrics endpoint and exposes recent activity.
+
+Full endpoint list:
+
+```
+GET  /healthz
+GET  /dashboard           (HTML)
+GET  /dashboard/metrics   (JSON)
+POST /router/input
+GET  /sessions/recent
+GET  /sessions/:id
+GET  /sessions/:id/messages
+GET  /sessions/:id/stream                   (SSE — raw_event_log tail)
+GET  /memory/:scope
+POST /memory
+GET  /raw-log/:session
+GET  /trace/:trace_id
+GET  /audit/:session
+GET  /growth/{events,artifacts}
+GET  /walkthrough/:session
+POST /walkthrough/:doc_id/{approve,reject}
+POST /steer
+POST /interrupt
+POST /maintenance/lint
+GET  /conversation/:session/{ownership,sub-channels,activity,pending}
+POST /conversation/:session/{reply,interrupt,steer}
 ```
 
 ---
@@ -155,24 +333,43 @@ JARVIS_DB=./jarvis.db ./target/release/jarvis route "OpenWrt DNS hosts 不生效
 ## Test inventory
 
 ```
-jarvis-core         13 tests
-jarvis-db           26 tests   (+2: outbox enqueue/drain + monotonic seq)
-jarvis-memory       40 tests
-jarvis-tools        18 tests   (+5: sandbox deny_all / allow / forbidden /
-                               args-too-long / cwd restriction)
-jarvis-growth       21 tests
-jarvis-orchestrator 66 tests
-jarvis-router       38 tests
-jarvis-control      11 tests
-jarvis-api           9 tests   (+2: dashboard metrics + SSE end-to-end)
-jarvis-anthropic     5 tests
-jarvis-openai        3 tests
-─────────────────
-TOTAL              250 tests
+jarvis-anthropic       5 tests
+jarvis-api            17 tests   (+ Conversation API + SSE concurrency)
+jarvis-cli            53 tests   (+ JSON variants + commands subcommand)
+jarvis-codex           6 tests   (+ 6 #[ignore] real codex e2e)
+jarvis-control        16 tests   (+ TurnSummary hook + judge path)
+jarvis-core           13 tests
+jarvis-db             28 tests
+jarvis-growth         21 tests
+jarvis-memory         44 tests
+jarvis-openai          3 tests
+jarvis-orchestrator   80 tests   (+ worker e2e + lock cross-proc + synthesizer)
+jarvis-router         46 tests
+jarvis-tools          18 tests
+─────────────────────────────────
+DEFAULT              352 tests   (0 failed)
+IGNORED               +6 tests   (real codex CLI; requires codex login)
 ```
 
 Each crate is independently testable: `cargo test -p jarvis-orchestrator`,
-etc.
+etc. Real codex e2e: `cargo test -p jarvis-codex --lib -- --ignored`.
+
+---
+
+## QA evidence
+
+`docs/qa/v1.8/` contains a 30-feature audit of the v1.8 PRD with real
+terminal transcripts (`docs/qa/v1.8/EVIDENCE.md` collects 50+ command
+runs and `cargo test --nocapture` outputs end-to-end). `docs/qa/v1.8/INDEX.md`
+maps each PRD section to its implementation status (✅ / 🟡 / ⏸️ / ❌ / 🖥️).
+
+`docs/prd/v1.9-context-handoff.md` is the design spec for the next
+version (CapacityAdvisor + AI-led HandoffSnapshot when the session
+context outgrows its useful budget — to be implemented after v0.4).
+
+`docs/eng/storage-tiering.md` is the v1.0 storage-tiering plan
+(Hot 30d / Warm 180d zstd / Cold object store) referenced by code
+TODOs in `raw_event_log.rs` and `scheduler.rs`.
 
 ---
 

@@ -1,0 +1,112 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to attach artifacts to (e.g. v0.1.0). Leave empty to just upload as workflow artifacts.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # required for softprops/action-gh-release to attach binaries
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: jarvis-${{ github.ref_name }}-x86_64-linux.tar.gz
+          - os: macos-14            # Apple Silicon
+            target: aarch64-apple-darwin
+            archive: jarvis-${{ github.ref_name }}-aarch64-macos.tar.gz
+          - os: macos-13            # Intel
+            target: x86_64-apple-darwin
+            archive: jarvis-${{ github.ref_name }}-x86_64-macos.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }} -p jarvis-cli
+
+      - name: Strip binary (unix)
+        if: runner.os != 'Windows'
+        run: strip target/${{ matrix.target }}/release/jarvis || true
+
+      - name: Run smoke test
+        run: |
+          target/${{ matrix.target }}/release/jarvis --help | head -5
+          target/${{ matrix.target }}/release/jarvis route "openwrt 排错" | head -3
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          ARCHIVE="${{ matrix.archive }}"
+          # On manual dispatch with empty tag, github.ref_name is the
+          # branch — make the archive name still readable.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -z "${{ github.event.inputs.tag }}" ]; then
+            VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2 || echo dev)
+            ARCHIVE="jarvis-${VERSION}-$(date +%Y%m%d)-$(git rev-parse --short HEAD)-${{ matrix.target }}.tar.gz"
+          fi
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/jarvis dist/jarvis
+          cp README.md dist/README.md
+          cp -r docs/qa dist/QA-EVIDENCE 2>/dev/null || true
+          tar -C dist -czf "$ARCHIVE" jarvis README.md QA-EVIDENCE 2>/dev/null \
+            || tar -C dist -czf "$ARCHIVE" jarvis README.md
+          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          ls -la "$ARCHIVE"*
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.archive }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.event.inputs.tag, '-rc') || contains(github.event.inputs.tag, '-beta') }}
+
+  test:
+    name: test (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run unit + integration tests
+        run: cargo test --workspace --locked
