@@ -18,7 +18,9 @@ pub use completion::{
     ChatMessage, ChatRole, Completion, CompletionError, CompletionRequest,
     CompletionResponse, Usage,
 };
-pub use config::{LlmConfig, ModelId, ModelIdParseError, ProviderConfig};
+pub use config::{
+    LlmConfig, ModelId, ModelIdParseError, OAuthProviderConfig, ProviderConfig,
+};
 pub use config_loader::{
     binary_on_path, config_path, load_default, load_from_path,
     provider_authed, provider_authed_full, provider_authed_with,

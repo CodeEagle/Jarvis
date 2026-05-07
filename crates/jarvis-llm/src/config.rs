@@ -70,6 +70,40 @@ pub struct ProviderConfig {
     /// Override base URL for OpenAI-compatible endpoints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// Native OAuth 2.0 Device Authorization Grant configuration. When
+    /// present, the provider authenticates via `jarvis model login
+    /// <name>` (token stored in `~/.jarvis/auth/<name>.json`) instead
+    /// of an API key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<OAuthProviderConfig>,
+}
+
+/// OAuth 2.0 Device Authorization Grant config (RFC 8628).
+///
+/// Lives under `[providers.<name>.oauth]` in `~/.jarvis/config.toml`.
+/// Consumed by `jarvis-auth` to drive the device flow; declared here
+/// so `LlmConfig` round-trips cleanly through TOML without pulling
+/// the OAuth machinery as a dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthProviderConfig {
+    /// Device authorization endpoint (RFC 8628 §3.1).
+    pub device_authorization_endpoint: String,
+    /// Token endpoint (RFC 8628 §3.4 / RFC 6749 §3.2).
+    pub token_endpoint: String,
+    /// Public client identifier.
+    pub client_id: String,
+    /// Some IdPs require a client secret on the token endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    /// Space-delimited scope string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Optional `audience` parameter (Auth0-style).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+    /// User-Agent header sent on auth requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
