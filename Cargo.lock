@@ -686,6 +686,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "jarvis-api",
+ "jarvis-codex",
  "jarvis-control",
  "jarvis-core",
  "jarvis-db",

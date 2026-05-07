@@ -143,7 +143,10 @@ impl CodexJudge {
         cmd.arg(&prompt);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // Without this, a timeout-aborted future leaves the codex
+            // child process running until it finishes on its own.
+            .kill_on_drop(true);
 
         let output = match tokio::time::timeout(self.config.timeout, cmd.output()).await {
             Ok(r) => r?,

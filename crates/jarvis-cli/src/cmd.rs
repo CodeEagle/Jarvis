@@ -37,6 +37,35 @@ pub fn cmd_route(db: &Db, input: &str) -> Result<String, CmdError> {
         .map_err(|e| CmdError::Router(e.to_string()))
 }
 
+/// Async variant that consults an external `LlmJudge`. Used by the
+/// `JARVIS_JUDGE=codex` (or other adapter) path on the CLI.
+pub async fn cmd_route_with_judge<J>(
+    db: &Db,
+    input: &str,
+    judge: &J,
+) -> Result<String, CmdError>
+where
+    J: jarvis_router::LlmJudge,
+{
+    if input.trim().is_empty() {
+        return Err(CmdError::MissingArg("user input"));
+    }
+    let router = jarvis_router::Router::new(db.clone());
+    let (decision, _) = router
+        .route_with_judge(
+            jarvis_router::RouterInput {
+                user_input: input,
+                session_id_hint: None,
+                running_agent_types: &[],
+            },
+            judge,
+        )
+        .await
+        .map_err(|e| CmdError::Router(e.to_string()))?;
+    serde_json::to_string_pretty(&decision)
+        .map_err(|e| CmdError::Router(e.to_string()))
+}
+
 pub fn cmd_memory_write(
     db: &Db,
     content: &str,

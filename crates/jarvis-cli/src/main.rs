@@ -34,7 +34,15 @@ async fn main() -> anyhow::Result<()> {
                 .get(2)
                 .cloned()
                 .unwrap_or_else(|| "帮我看个 OpenWrt 的报错".into());
-            let pretty = jarvis_cli::cmd_route(&db, &input)?;
+            let pretty = match env::var("JARVIS_JUDGE").as_deref() {
+                Ok("codex") => {
+                    let judge = jarvis_codex::CodexJudge::new(
+                        jarvis_codex::CodexConfig::from_env(),
+                    );
+                    jarvis_cli::cmd_route_with_judge(&db, &input, &judge).await?
+                }
+                _ => jarvis_cli::cmd_route(&db, &input)?,
+            };
             println!("{pretty}");
         }
         Some("chat") => chat_repl(db).await?,
@@ -649,5 +657,7 @@ Env:
   JARVIS_REPLICATION_PEER              outbox replication endpoint
   JARVIS_REPLICATION_TOKEN             bearer token for replication
   ANTHROPIC_API_KEY / OPENAI_API_KEY   for LLM judge adapters
+  JARVIS_JUDGE=codex                   route through local codex CLI subprocess
+  CODEX_BINARY / CODEX_MODEL / CODEX_TIMEOUT_SECS  override codex defaults
 ");
 }

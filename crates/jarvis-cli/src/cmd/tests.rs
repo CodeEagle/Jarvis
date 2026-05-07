@@ -40,6 +40,40 @@ fn cmd_route_returns_pretty_json() {
     assert!(v["confidence"].as_f64().unwrap() < 1.0);
 }
 
+#[tokio::test]
+async fn cmd_route_with_judge_uses_judge_outcome() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = std::env::temp_dir().join(format!(
+        "jarvis-cli-judge-{}",
+        jarvis_core::ids::new_id_with_prefix("t")
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let bin = tmp.join("codex");
+    let body = r#"{"primary_intent":"research.web_search","secondary_intents":[],"domain":"research","topic":"x","session_action":"create_new","agent_type":"research","confidence":0.95,"clarification_needed":false,"router_notes":"cli judge"}"#;
+    let script = format!(
+        "#!/usr/bin/env bash\nset -e\nout=\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-o\" ]; then out=\"$a\"; fi\n  prev=\"$a\"\ndone\ncat > \"$out\" <<'EOF_FAKE'\n{body}\nEOF_FAKE\n"
+    );
+    std::fs::write(&bin, script).unwrap();
+    let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&bin, perms).unwrap();
+
+    let cfg = jarvis_codex::CodexConfig {
+        binary: bin.clone(),
+        model: None,
+        timeout: std::time::Duration::from_secs(15),
+    };
+    let judge = jarvis_codex::CodexJudge::new(cfg);
+    let db = fresh_db();
+    let pretty = cmd_route_with_judge(&db, "research the openwrt build system", &judge)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&pretty).unwrap();
+    assert_eq!(v["agent_type"], "research");
+    assert!(v["router_notes"].as_str().unwrap().contains("cli judge"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 #[test]
 fn cmd_route_rejects_empty_input() {
     let db = fresh_db();

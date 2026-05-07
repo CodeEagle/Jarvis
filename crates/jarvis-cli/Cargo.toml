@@ -21,6 +21,7 @@ jarvis-growth.workspace = true
 jarvis-orchestrator.workspace = true
 jarvis-control.workspace = true
 jarvis-api.workspace = true
+jarvis-codex.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
