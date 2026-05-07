@@ -1040,20 +1040,21 @@ async fn worker_driver_failed_on_nonzero_exit() {
     };
     let result = dispatch::SubAgentDriver::execute(&driver, envelope).await;
     assert_eq!(result.status, sub_task::SubTaskStatus::Failed);
-    // Either the explicit escalation captured stderr, OR the
-    // summary mentions a non-zero exit. Both are valid manifestations
-    // of the failure path; tighten only after observing flakes.
-    let combined = format!(
-        "{} {}",
-        result.summary,
-        result
-            .escalation
-            .map(|e| e.reason)
-            .unwrap_or_default()
+    // After the drain-via-spawned-tasks fix, stderr is fully read
+    // before we report status, so the escalation MUST contain the
+    // child's stderr. Tightened from the previous either-or assertion.
+    let escalation_reason = result
+        .escalation
+        .map(|e| e.reason)
+        .unwrap_or_default();
+    assert!(
+        escalation_reason.contains("broke"),
+        "expected stderr 'broke' in escalation, got: {escalation_reason}"
     );
     assert!(
-        combined.contains("broke") || combined.contains("exit"),
-        "expected failure signal in: {combined}"
+        result.summary.contains("exit"),
+        "expected exit in summary, got: {}",
+        result.summary
     );
 }
 

@@ -122,53 +122,44 @@ impl SubAgentDriver for WorkerProcessDriver {
 
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
-        let mut stdout_reader = BufReader::new(stdout).lines();
-        let mut stderr_reader = BufReader::new(stderr).lines();
 
-        let mut last_line: Option<String> = None;
-        let mut stderr_buf = String::new();
-
-        let read_loop = async {
-            loop {
-                tokio::select! {
-                    line = stdout_reader.next_line() => {
-                        match line {
-                            Ok(Some(l)) => last_line = Some(l),
-                            Ok(None) => break,
-                            Err(e) => {
-                                stderr_buf.push_str(&format!("stdout read error: {e}\n"));
-                                break;
-                            }
-                        }
-                    }
-                    line = stderr_reader.next_line() => {
-                        if let Ok(Some(l)) = line {
-                            stderr_buf.push_str(&l);
-                            stderr_buf.push('\n');
-                        }
-                    }
-                    status = child.wait() => {
-                        // Drain whatever's left.
-                        while let Ok(Some(l)) = stdout_reader.next_line().await {
-                            last_line = Some(l);
-                        }
-                        while let Ok(Some(l)) = stderr_reader.next_line().await {
-                            stderr_buf.push_str(&l);
-                            stderr_buf.push('\n');
-                        }
-                        return status;
-                    }
-                }
+        // Drain stdout and stderr on dedicated tasks so neither pipe
+        // backs up the child while we're waiting on the other.
+        // Tasks naturally complete when their pipe hits EOF after the
+        // child exits (or after we kill it on timeout).
+        let stdout_task = tokio::spawn(async move {
+            let mut reader = BufReader::new(stdout).lines();
+            let mut last = None;
+            while let Ok(Some(l)) = reader.next_line().await {
+                last = Some(l);
             }
-            child.wait().await
-        };
+            last
+        });
+        let stderr_task = tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            let mut buf = String::new();
+            while let Ok(Some(l)) = reader.next_line().await {
+                buf.push_str(&l);
+                buf.push('\n');
+            }
+            buf
+        });
 
-        let status = match timeout(self.command.timeout, read_loop).await {
+        let status = match timeout(self.command.timeout, child.wait()).await {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
                 return failed_result(&sub_task_id, &format!("child wait failed: {e}"));
             }
             Err(_) => {
+                // Timeout: kill the child. We can't await the drain
+                // tasks here — child.kill() only signals the direct
+                // child (e.g. /bin/sh), and any grandchild it forked
+                // (e.g. `sleep 60`) keeps the pipes open and would
+                // hang the drain. Abort instead and report the
+                // partial stderr that's already been read.
+                let _ = child.kill().await;
+                stdout_task.abort();
+                stderr_task.abort();
                 return SubTaskResult {
                     sub_task_id,
                     status: SubTaskStatus::Failed,
@@ -184,6 +175,14 @@ impl SubAgentDriver for WorkerProcessDriver {
                 };
             }
         };
+
+        // Child exited; both pipes hit EOF, so the tasks complete
+        // naturally. Awaiting them guarantees stderr is fully drained
+        // before we inspect it (eliminates the previous select-loop
+        // race where an early stdout-EOF could exit before stderr was
+        // read).
+        let last_line = stdout_task.await.unwrap_or(None);
+        let stderr_buf = stderr_task.await.unwrap_or_default();
 
         if !status.success() {
             return SubTaskResult {

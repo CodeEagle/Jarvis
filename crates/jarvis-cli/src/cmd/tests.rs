@@ -92,6 +92,13 @@ fn cmd_memory_write_and_list_round_trip() {
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("preference_memory"));
     assert!(lines[0].contains("函数式"));
+    // id surfaces in list output so it can be piped to forget /
+    // memory-history without a separate search step.
+    assert!(
+        lines[0].contains("mem_"),
+        "list line must include memory id: {}",
+        lines[0]
+    );
 }
 
 #[test]

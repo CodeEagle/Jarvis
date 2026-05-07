@@ -146,9 +146,18 @@ impl Router {
             .await;
         match llm {
             Some(out) if out.confidence > decision.confidence && !decision.mention_override => {
-                decision.primary_intent = out.primary_intent;
+                decision.primary_intent = out.primary_intent.clone();
                 decision.secondary_intents = out.secondary_intents;
-                decision.domain = out.domain;
+                // PRD §5.3: domain must be one of the canonical L1
+                // values. Models sometimes return synonyms ("software
+                // _engineering"); fall back to the L1 prefix of the
+                // primary_intent (always canonical), and last to the
+                // pre-judge rule-layer domain.
+                decision.domain = normalize_domain(
+                    &out.domain,
+                    &out.primary_intent,
+                    &decision.domain,
+                );
                 decision.topic = out.topic;
                 // Don't override session_action when explicit_reference fired.
                 if !diag.had_explicit_reference {
@@ -496,6 +505,24 @@ fn build_mention_warning(
         unresolved.join(", "),
         mentionable
     ))
+}
+
+/// Map a free-form `domain` string from an LLM judge to one of the
+/// canonical L1 domain values defined in PRD §5.3. Falls back to the
+/// `primary_intent` prefix (always canonical), then to the pre-judge
+/// rule-layer domain.
+fn normalize_domain(
+    judge_domain: &str,
+    primary_intent: &str,
+    fallback: &str,
+) -> String {
+    if jarvis_core::intent::Domain::parse_l1(judge_domain).is_some() {
+        return judge_domain.to_string();
+    }
+    if let Some(d) = jarvis_core::intent::Domain::parse_l1(primary_intent) {
+        return d.as_str().to_string();
+    }
+    fallback.to_string()
 }
 
 fn log_mention(

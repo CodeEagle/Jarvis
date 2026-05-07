@@ -134,7 +134,8 @@ pub fn cmd_memory_list(db: &Db, scope: &str) -> Result<Vec<String>, CmdError> {
     Ok(results
         .into_iter()
         .map(|hit| {
-            render::format_memory_line(
+            render::format_memory_line_with_id(
+                &hit.memory.id,
                 hit.memory.r#type.as_str(),
                 &hit.memory.content,
                 hit.trust_now,

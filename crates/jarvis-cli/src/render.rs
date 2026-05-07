@@ -41,6 +41,21 @@ pub fn format_memory_line(ty: &str, content: &str, trust: f32) -> String {
     format!("[{}] {} trust={:.2}", ty, truncate(content, 200), trust)
 }
 
+pub fn format_memory_line_with_id(
+    id: &str,
+    ty: &str,
+    content: &str,
+    trust: f32,
+) -> String {
+    format!(
+        "{}  [{}] {} trust={:.2}",
+        id,
+        ty,
+        truncate(content, 200),
+        trust
+    )
+}
+
 pub fn format_dashboard_summary(
     active_sessions: usize,
     raw_events: i64,

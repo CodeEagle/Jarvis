@@ -17,6 +17,7 @@ use jarvis_db::Db;
 use jarvis_growth::{Collector, SourceModule};
 use jarvis_memory::lint::MemoryLint;
 use jarvis_memory::dream::DreamCluster;
+use jarvis_memory::persona::PersonaLayer;
 use serde_json::json;
 use tracing::{info, warn};
 
@@ -27,6 +28,11 @@ pub struct SchedulerConfig {
     pub stale_lock_sweep_period: Duration,
     pub stale_lock_max_age: Duration,
     pub workspace_root: Option<std::path::PathBuf>,
+    /// Persona base directory (typically `~/.jarvis/profiles/<user_id>/`).
+    /// When set, the scheduler regenerates `user.md` from
+    /// `preference_memory` every `persona_sync_period` (PRD §12.7).
+    pub persona_root: Option<std::path::PathBuf>,
+    pub persona_sync_period: Duration,
     /// Memory scope to lint / cluster. Defaults to "global".
     pub scope: String,
 }
@@ -39,6 +45,8 @@ impl Default for SchedulerConfig {
             stale_lock_sweep_period: Duration::from_secs(3600),
             stale_lock_max_age: Duration::from_secs(30 * 60),
             workspace_root: None,
+            persona_root: None,
+            persona_sync_period: Duration::from_secs(6 * 3600),
             scope: "global".to_string(),
         }
     }
@@ -61,7 +69,11 @@ impl Scheduler {
         let lint = self.spawn_lint();
         let cluster = self.spawn_cluster();
         let sweep = self.spawn_stale_sweep();
-        vec![lint, cluster, sweep]
+        let mut handles = vec![lint, cluster, sweep];
+        if let Some(p) = self.spawn_persona_sync() {
+            handles.push(p);
+        }
+        handles
     }
 
     fn spawn_lint(&self) -> tokio::task::JoinHandle<()> {
@@ -102,6 +114,37 @@ impl Scheduler {
                 run_cluster_once(&cluster, &collector, &scope).await;
             }
         })
+    }
+
+    fn spawn_persona_sync(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let root = self.cfg.persona_root.clone()?;
+        let db = self.db.clone();
+        let period = self.cfg.persona_sync_period;
+        Some(tokio::spawn(async move {
+            let layer = PersonaLayer::new(root);
+            let collector = Collector::new(db.clone());
+            let mut tick = tokio::time::interval(period);
+            tick.set_missed_tick_behavior(
+                tokio::time::MissedTickBehavior::Delay,
+            );
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                match layer.sync_user_from_memory(&db) {
+                    Ok(body) => {
+                        let bytes = body.len();
+                        info!(target: "scheduler", "persona user.md synced ({bytes} bytes)");
+                        let _ = collector.emit(
+                            SourceModule::Memory,
+                            "persona.user_md.synced",
+                            None,
+                            json!({"bytes": bytes}),
+                        );
+                    }
+                    Err(e) => warn!(target: "scheduler", "persona sync error: {e}"),
+                }
+            }
+        }))
     }
 
     fn spawn_stale_sweep(&self) -> tokio::task::JoinHandle<()> {
