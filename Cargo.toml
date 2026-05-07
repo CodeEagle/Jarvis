@@ -12,6 +12,7 @@ members = [
     "crates/jarvis-api",
     "crates/jarvis-anthropic",
     "crates/jarvis-openai",
+    "crates/jarvis-codex",
     "crates/jarvis-cli",
 ]
 
@@ -54,6 +55,7 @@ jarvis-control      = { path = "crates/jarvis-control" }
 jarvis-api          = { path = "crates/jarvis-api" }
 jarvis-anthropic    = { path = "crates/jarvis-anthropic" }
 jarvis-openai       = { path = "crates/jarvis-openai" }
+jarvis-codex        = { path = "crates/jarvis-codex" }
 
 [profile.release]
 lto = "thin"

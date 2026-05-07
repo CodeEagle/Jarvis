@@ -704,6 +704,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "jarvis-codex"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "jarvis-core",
+ "jarvis-router",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "jarvis-control"
 version = "0.1.0"
 dependencies = [
