@@ -247,8 +247,22 @@ OAUTH_LIST=$(JARVIS_CONFIG="$MODEL_CFG" run model list)
 expect_contains "model list shows oauth provider" "oauth via" "$OAUTH_LIST"
 OAUTH_JSON=$(JARVIS_CONFIG="$MODEL_CFG" run model list --json)
 expect_contains "model list --json oauth_binary" "\"oauth_binary\":\"claude\"" "$OAUTH_JSON"
+expect_contains "model list --json oauth_kind cli" "\"oauth_kind\":\"cli_subprocess\"" "$OAUTH_JSON"
 expect_contains "model list --json no api_key_env" "\"api_key_env\":null" "$OAUTH_JSON"
 rm -f "$MODEL_CFG"
+
+# Native OAuth (device flow): login error paths + logout idempotency.
+# The actual flow can't be exercised against a live IdP from smoke;
+# unit tests in jarvis-auth + jarvis-cli cover it end-to-end against
+# a hyper stub. Here we just verify CLI plumbing is wired up.
+AUTH_DIR="/tmp/jarvis-smoke-auth-$$"
+rm -rf "$AUTH_DIR"
+LOGOUT_NONE=$(JARVIS_AUTH_DIR="$AUTH_DIR" run model logout no-such-provider)
+expect_contains "model logout idempotent" "nothing to do" "$LOGOUT_NONE"
+LOGIN_NO_CFG=$(JARVIS_CONFIG=/tmp/empty-cfg-$$ JARVIS_AUTH_DIR="$AUTH_DIR" \
+    run model login someone 2>&1 || true)
+expect_contains "model login rejects unconfigured" "no [providers.someone.oauth] block" "$LOGIN_NO_CFG"
+rm -rf "$AUTH_DIR" /tmp/empty-cfg-$$
 
 # ── 12. Subcommand --help / --json consistency ──────────────────────
 hdr "12. --help / --json consistency"

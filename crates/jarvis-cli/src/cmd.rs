@@ -1121,17 +1121,56 @@ pub fn cmd_model_set(id: &str) -> Result<String, CmdError> {
     ))
 }
 
+/// Three categories of provider auth, in order of precedence:
+///   1. Native OAuth   — `[providers.<name>.oauth]` configured;
+///                       tokens stored in ~/.jarvis/auth/<name>.json.
+///   2. CLI OAuth      — readiness driven by an external CLI binary
+///                       (e.g. claude-cli wraps `claude`).
+///   3. API key        — env var (ANTHROPIC_API_KEY, …) or inline.
+fn classify_provider(
+    cfg: &jarvis_llm::LlmConfig,
+    name: &str,
+    provider: &jarvis_llm::ProviderConfig,
+    store: &jarvis_auth::TokenStore,
+) -> (String, &'static str) {
+    if provider.oauth.is_some() {
+        let tokens = store
+            .load(name)
+            .ok()
+            .flatten()
+            .filter(|t| !t.is_expired());
+        let status = if tokens.is_some() {
+            "ready"
+        } else {
+            "not logged in"
+        };
+        return ("oauth (device flow)".into(), status);
+    }
+    if let Some(bin) = jarvis_llm::provider_oauth_binary(name) {
+        let status = if jarvis_llm::binary_on_path(bin) {
+            "ready"
+        } else {
+            "binary missing"
+        };
+        return (format!("oauth via `{bin}` CLI"), status);
+    }
+    let env = jarvis_llm::provider_env_var(name, cfg)
+        .unwrap_or_else(|| "(none)".into());
+    let status = if jarvis_llm::provider_authed(name, cfg) {
+        "ready"
+    } else {
+        "missing key"
+    };
+    (format!("env={env}"), status)
+}
+
 /// Pretty list of providers (config + auth status) for human eyes.
-/// OAuth providers (those with a sibling CLI holding the credentials)
-/// surface differently: no env var, ready iff the binary is on PATH.
 pub fn cmd_model_list() -> Result<Vec<String>, CmdError> {
     let cfg = jarvis_llm::load_default()
         .map_err(|e| CmdError::Config(e.to_string()))?;
+    let store = jarvis_auth::TokenStore::default_dir();
     let mut lines = Vec::new();
-    let default = cfg
-        .default_model
-        .as_deref()
-        .unwrap_or("(none)");
+    let default = cfg.default_model.as_deref().unwrap_or("(none)");
     lines.push(format!("default = {default}"));
     lines.push(format!(
         "config  = {}",
@@ -1142,21 +1181,7 @@ pub fn cmd_model_list() -> Result<Vec<String>, CmdError> {
     } else {
         lines.push("providers:".into());
         for (name, provider) in &cfg.providers {
-            let oauth_bin = jarvis_llm::provider_oauth_binary(name);
-            let auth_label = match oauth_bin {
-                Some(b) => format!("oauth via `{b}` CLI"),
-                None => format!(
-                    "env={}",
-                    jarvis_llm::provider_env_var(name, &cfg)
-                        .unwrap_or_else(|| "(none)".into())
-                ),
-            };
-            let authed = jarvis_llm::provider_authed(name, &cfg);
-            let status = match (authed, oauth_bin) {
-                (true, _) => "ready",
-                (false, Some(_)) => "binary missing",
-                (false, None) => "missing key",
-            };
+            let (auth_label, status) = classify_provider(&cfg, name, provider, &store);
             let base = provider
                 .base_url
                 .as_deref()
@@ -1172,15 +1197,35 @@ pub fn cmd_model_list() -> Result<Vec<String>, CmdError> {
 pub fn cmd_model_list_json() -> Result<String, CmdError> {
     let cfg = jarvis_llm::load_default()
         .map_err(|e| CmdError::Config(e.to_string()))?;
+    let store = jarvis_auth::TokenStore::default_dir();
     let providers: Vec<serde_json::Value> = cfg
         .providers
         .iter()
         .map(|(name, p)| {
+            let oauth_kind = if p.oauth.is_some() {
+                Some("device_flow")
+            } else if jarvis_llm::provider_oauth_binary(name).is_some() {
+                Some("cli_subprocess")
+            } else {
+                None
+            };
+            let token_present = store
+                .load(name)
+                .ok()
+                .flatten()
+                .map(|t| !t.is_expired())
+                .unwrap_or(false);
+            let authed = if p.oauth.is_some() {
+                token_present
+            } else {
+                jarvis_llm::provider_authed(name, &cfg)
+            };
             serde_json::json!({
                 "name": name,
                 "api_key_env": jarvis_llm::provider_env_var(name, &cfg),
+                "oauth_kind": oauth_kind,
                 "oauth_binary": jarvis_llm::provider_oauth_binary(name),
-                "authed": jarvis_llm::provider_authed(name, &cfg),
+                "authed": authed,
                 "base_url": p.base_url,
             })
         })
@@ -1191,6 +1236,127 @@ pub fn cmd_model_list_json() -> Result<String, CmdError> {
         "providers": providers,
     });
     Ok(payload.to_string())
+}
+
+// ── Native OAuth login / logout ────────────────────────────────────────
+
+/// Run the OAuth 2.0 device authorization flow for a provider whose
+/// config carries `[providers.<name>.oauth]`. Prints the verification
+/// URL + user code, polls until the user approves (or until a fatal
+/// OAuth error), and persists the tokens to disk.
+///
+/// Reads config from `~/.jarvis/config.toml` and writes tokens under
+/// `~/.jarvis/auth/`; pass through to [`cmd_model_login_with`] when
+/// you need to inject explicit config / store for tests.
+pub async fn cmd_model_login<P: Fn(&str)>(
+    provider: &str,
+    printer: P,
+) -> Result<(), CmdError> {
+    let cfg = jarvis_llm::load_default()
+        .map_err(|e| CmdError::Config(e.to_string()))?;
+    let store = jarvis_auth::TokenStore::default_dir();
+    cmd_model_login_with(provider, &cfg, &store, printer).await
+}
+
+/// Same as [`cmd_model_login`] but takes config + store explicitly so
+/// integration tests can drive the flow against a tempdir + stub IdP.
+pub async fn cmd_model_login_with<P: Fn(&str)>(
+    provider: &str,
+    cfg: &jarvis_llm::LlmConfig,
+    store: &jarvis_auth::TokenStore,
+    printer: P,
+) -> Result<(), CmdError> {
+    if provider.trim().is_empty() {
+        return Err(CmdError::MissingArg("provider name"));
+    }
+    let oauth_cfg = cfg
+        .providers
+        .get(provider)
+        .and_then(|p| p.oauth.clone())
+        .ok_or_else(|| {
+            CmdError::Config(format!(
+                "provider `{provider}` has no [providers.{provider}.oauth] block"
+            ))
+        })?;
+
+    let client = jarvis_auth::DeviceFlowClient::new(provider, oauth_cfg);
+    let started = client
+        .start()
+        .await
+        .map_err(|e| CmdError::Config(format!("start device flow: {e}")))?;
+
+    printer("Open this URL in your browser:");
+    if let Some(complete) = &started.verification_uri_complete {
+        printer(&format!("  {complete}"));
+    } else {
+        printer(&format!("  {}", started.verification_uri));
+    }
+    printer(&format!("Code: {}", started.user_code));
+    printer("");
+    printer("Waiting for approval…");
+
+    let interval = std::time::Duration::from_secs(
+        started.interval.unwrap_or(5).max(1) as u64,
+    );
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(
+            started.expires_in.unwrap_or(900).max(60) as u64,
+        );
+
+    loop {
+        if std::time::Instant::now() > deadline {
+            return Err(CmdError::Config(
+                "device code expired locally before approval".into(),
+            ));
+        }
+        match client.poll_once(&started.device_code).await {
+            Ok(jarvis_auth::PollOutcome::Approved(tokens)) => {
+                let path = store
+                    .save(&tokens)
+                    .map_err(|e| CmdError::Config(format!("save tokens: {e}")))?;
+                printer(&format!("Approved · token saved to {}", path.display()));
+                return Ok(());
+            }
+            Ok(jarvis_auth::PollOutcome::Pending) => {
+                tokio::time::sleep(interval).await;
+            }
+            Ok(jarvis_auth::PollOutcome::SlowDown) => {
+                // RFC 8628 §3.5: extend interval by 5 s on slow_down.
+                tokio::time::sleep(interval + std::time::Duration::from_secs(5))
+                    .await;
+            }
+            Err(e) => return Err(CmdError::Config(format!("device flow: {e}"))),
+        }
+    }
+}
+
+/// Delete the persisted tokens for a provider. Idempotent.
+pub fn cmd_model_logout(provider: &str) -> Result<String, CmdError> {
+    if provider.trim().is_empty() {
+        return Err(CmdError::MissingArg("provider name"));
+    }
+    let store = jarvis_auth::TokenStore::default_dir();
+    cmd_model_logout_with(provider, &store)
+}
+
+/// Test seam for [`cmd_model_logout`].
+pub fn cmd_model_logout_with(
+    provider: &str,
+    store: &jarvis_auth::TokenStore,
+) -> Result<String, CmdError> {
+    let removed = store
+        .delete(provider)
+        .map_err(|e| CmdError::Config(e.to_string()))?;
+    Ok(if removed {
+        format!("logged out of `{provider}`")
+    } else {
+        format!("no tokens stored for `{provider}` (nothing to do)")
+    })
+}
+
+/// Default printer wired to stdout — used by the binary.
+pub fn stdout_printer(s: &str) {
+    println!("{s}");
 }
 
 #[cfg(test)]

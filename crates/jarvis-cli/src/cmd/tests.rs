@@ -869,3 +869,209 @@ fn cmd_dashboard_summary_reports_seeded_state() {
     assert!(summary.contains("memories=1"));
     assert!(summary.contains("pending_outbox=0"));
 }
+
+// ── jarvis model login / logout ─────────────────────────────────────────
+
+mod oauth_login {
+    use super::*;
+    use std::convert::Infallible;
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use hyper::body::Incoming;
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper::{Request, Response, StatusCode};
+    use hyper_util::rt::TokioIo;
+
+    type SimpleHandler = Arc<
+        dyn Fn(
+                String,
+            )
+                -> std::pin::Pin<Box<dyn std::future::Future<Output = Response<Full<Bytes>>> + Send>>
+            + Send
+            + Sync,
+    >;
+
+    async fn spawn_idp(handler: SimpleHandler) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                let io = TokioIo::new(stream);
+                let h = handler.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: Request<Incoming>| {
+                        let h = h.clone();
+                        async move {
+                            Ok::<_, Infallible>(h(req.uri().path().to_string()).await)
+                        }
+                    });
+                    let _ = http1::Builder::new().serve_connection(io, svc).await;
+                });
+            }
+        });
+        addr
+    }
+
+    fn json_resp(status: u16, body: &str) -> Response<Full<Bytes>> {
+        Response::builder()
+            .status(StatusCode::from_u16(status).unwrap())
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(body.to_string())))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn login_completes_device_flow_and_writes_token_file() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_h = counter.clone();
+        let handler: SimpleHandler = Arc::new(move |path| {
+            let counter = counter_h.clone();
+            Box::pin(async move {
+                if path == "/device/code" {
+                    json_resp(
+                        200,
+                        r#"{"device_code":"DC","user_code":"USER-123","verification_uri":"https://idp.example/device","verification_uri_complete":"https://idp.example/device?code=USER-123","expires_in":600,"interval":1}"#,
+                    )
+                } else if path == "/token" {
+                    let n = counter.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        json_resp(400, r#"{"error":"authorization_pending"}"#)
+                    } else {
+                        json_resp(
+                            200,
+                            r#"{"access_token":"AT","refresh_token":"RT","token_type":"Bearer","expires_in":3600}"#,
+                        )
+                    }
+                } else {
+                    json_resp(404, r#"{"error":"not_found"}"#)
+                }
+            })
+        });
+        let addr = spawn_idp(handler).await;
+
+        let mut cfg = jarvis_llm::LlmConfig::default();
+        cfg.providers.insert(
+            "demo".into(),
+            jarvis_llm::ProviderConfig {
+                oauth: Some(jarvis_llm::OAuthProviderConfig {
+                    device_authorization_endpoint: format!(
+                        "http://{addr}/device/code"
+                    ),
+                    token_endpoint: format!("http://{addr}/token"),
+                    client_id: "test-client".into(),
+                    client_secret: None,
+                    scope: Some("read".into()),
+                    audience: None,
+                    user_agent: Some("jarvis-cli-test".into()),
+                }),
+                ..Default::default()
+            },
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = jarvis_auth::TokenStore::new(dir.path());
+
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let lines_w = lines.clone();
+        cmd_model_login_with("demo", &cfg, &store, move |s: &str| {
+            lines_w.lock().unwrap().push(s.to_string());
+        })
+        .await
+        .expect("login ok");
+
+        let printed = lines.lock().unwrap().join("\n");
+        assert!(
+            printed.contains("https://idp.example/device?code=USER-123"),
+            "verification URL missing: {printed}"
+        );
+        assert!(printed.contains("USER-123"), "user code missing: {printed}");
+        assert!(printed.contains("Approved"), "no approval line: {printed}");
+
+        let saved = store.load("demo").unwrap().expect("token stored");
+        assert_eq!(saved.access_token, "AT");
+        assert_eq!(saved.refresh_token.as_deref(), Some("RT"));
+
+        // Logout removes it.
+        let out = cmd_model_logout_with("demo", &store).unwrap();
+        assert!(out.contains("logged out"), "got: {out}");
+        assert!(store.load("demo").unwrap().is_none());
+        // Idempotent on second call.
+        let out2 = cmd_model_logout_with("demo", &store).unwrap();
+        assert!(out2.contains("nothing to do"), "got: {out2}");
+    }
+
+    #[tokio::test]
+    async fn login_surfaces_access_denied() {
+        let handler: SimpleHandler = Arc::new(|path| {
+            Box::pin(async move {
+                if path == "/device/code" {
+                    json_resp(
+                        200,
+                        r#"{"device_code":"DC","user_code":"X","verification_uri":"https://idp.example/device","expires_in":600,"interval":1}"#,
+                    )
+                } else {
+                    json_resp(400, r#"{"error":"access_denied"}"#)
+                }
+            })
+        });
+        let addr = spawn_idp(handler).await;
+
+        let mut cfg = jarvis_llm::LlmConfig::default();
+        cfg.providers.insert(
+            "demo".into(),
+            jarvis_llm::ProviderConfig {
+                oauth: Some(jarvis_llm::OAuthProviderConfig {
+                    device_authorization_endpoint: format!(
+                        "http://{addr}/device/code"
+                    ),
+                    token_endpoint: format!("http://{addr}/token"),
+                    client_id: "c".into(),
+                    client_secret: None,
+                    scope: None,
+                    audience: None,
+                    user_agent: None,
+                }),
+                ..Default::default()
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let store = jarvis_auth::TokenStore::new(dir.path());
+        let err = cmd_model_login_with("demo", &cfg, &store, |_| {})
+            .await
+            .expect_err("should fail");
+        let msg = format!("{err}");
+        assert!(msg.contains("access_denied") || msg.contains("denied"));
+    }
+
+    #[tokio::test]
+    async fn login_rejects_provider_without_oauth_block() {
+        let cfg = jarvis_llm::LlmConfig::default();
+        let dir = tempfile::tempdir().unwrap();
+        let store = jarvis_auth::TokenStore::new(dir.path());
+        let err = cmd_model_login_with("missing", &cfg, &store, |_| {})
+            .await
+            .expect_err("should fail");
+        let msg = format!("{err}");
+        assert!(msg.contains("no [providers.missing.oauth] block"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn login_rejects_empty_provider_name() {
+        let cfg = jarvis_llm::LlmConfig::default();
+        let dir = tempfile::tempdir().unwrap();
+        let store = jarvis_auth::TokenStore::new(dir.path());
+        let err = cmd_model_login_with("", &cfg, &store, |_| {})
+            .await
+            .expect_err("should fail");
+        assert!(matches!(err, CmdError::MissingArg(_)));
+    }
+}

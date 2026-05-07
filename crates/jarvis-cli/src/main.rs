@@ -345,6 +345,18 @@ async fn main() -> anyhow::Result<()> {
                     let id = args.get(3).cloned().unwrap_or_default();
                     println!("{}", jarvis_cli::cmd_model_set(&id)?);
                 }
+                Some("login") => {
+                    let provider = args.get(3).cloned().unwrap_or_default();
+                    jarvis_cli::cmd_model_login(
+                        &provider,
+                        jarvis_cli::stdout_printer,
+                    )
+                    .await?;
+                }
+                Some("logout") => {
+                    let provider = args.get(3).cloned().unwrap_or_default();
+                    println!("{}", jarvis_cli::cmd_model_logout(&provider)?);
+                }
                 Some(other) => anyhow::bail!("unknown model subcommand: {other}"),
             }
         }
@@ -1214,20 +1226,30 @@ jarvis model <subcommand>
   list [--json]                       Show configured providers + auth status.
   current                             Print the default model id.
   set <provider/model>                Set the default model (writes config file).
+  login <provider>                    Run OAuth 2.0 device flow; saves tokens
+                                       to ~/.jarvis/auth/<provider>.json.
+  logout <provider>                   Delete persisted tokens for a provider.
 
   Config file: ~/.jarvis/config.toml (override with JARVIS_CONFIG).
   Model id format: `<provider>/<model>` (e.g. anthropic/claude-sonnet-4-6).
 
-  API-key providers (via genai): anthropic, openai, gemini, groq,
-  cohere, deepseek, xai, fireworks, together, ollama. Each reads its
-  well-known env var (ANTHROPIC_API_KEY / OPENAI_API_KEY / …).
+  Three auth styles, picked per-provider:
 
-  OAuth providers (subprocess-wrap an external CLI):
-    claude-cli/<model>   Uses the `claude` CLI (Anthropic OAuth).
-                          Requires `claude` on PATH and `claude login`
-                          to have been run. Models: sonnet, opus, or
-                          a full id like claude-sonnet-4-6.
-                          Env: CLAUDE_BINARY, CLAUDE_TIMEOUT_SECS.
+  1. API key — env var (anthropic / openai / gemini / groq / cohere /
+     deepseek / xai / fireworks / together / ollama). Reads
+     ANTHROPIC_API_KEY / OPENAI_API_KEY / … from the environment.
+
+  2. CLI OAuth — subprocess-wrap an external CLI that already holds an
+     OAuth token (e.g. `claude-cli/<model>` runs the `claude` CLI).
+     Requires the binary on PATH; auth is whatever `claude login` set.
+
+  3. Native OAuth (device flow) — provider has [providers.<name>.oauth]
+     in the config file; `jarvis model login <name>` runs the RFC 8628
+     flow in-terminal and persists tokens to ~/.jarvis/auth/.
+     Override the auth dir with $JARVIS_AUTH_DIR.
+
+  Env: CLAUDE_BINARY / CLAUDE_TIMEOUT_SECS  (claude-cli)
+       JARVIS_AUTH_DIR                      (native OAuth tokens)
 ",
         "maintenance" => "\
 jarvis maintenance [scope]
@@ -1317,7 +1339,8 @@ Provider:
   jarvis model list [--json]           show configured providers and auth status
   jarvis model current                 print the default model id
   jarvis model set <provider/model>    set the default model (writes config file)
-                                       (claude-cli/<model> wraps the OAuth `claude` CLI)
+  jarvis model login <provider>        OAuth 2.0 device flow → saves tokens
+  jarvis model logout <provider>       delete persisted OAuth tokens
 
 Server / demo:
   jarvis serve [host:port]             start HTTP API (default 127.0.0.1:7777)

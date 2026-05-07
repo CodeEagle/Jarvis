@@ -1014,8 +1014,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
  "chrono",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "jarvis-api",
+ "jarvis-auth",
  "jarvis-claude-cli",
  "jarvis-codex",
  "jarvis-control",
