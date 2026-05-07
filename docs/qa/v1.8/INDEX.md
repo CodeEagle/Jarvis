@@ -1,5 +1,8 @@
 # Jarvis v1.8 PRD QA — Index
 
+> **📋 终端证据**：[**EVIDENCE.md**](./EVIDENCE.md) 包含本次 QA 真实捕获的 50+ 段命令 + 输出（CLI 跑 / `cargo test --nocapture`），1488 行原始 transcript。
+> 每条 feature 文件描述实现状态 + 验收点；EVIDENCE.md 是命令实测原文。
+
 每个 feature 一份独立 markdown，记录命令 + 真实 CLI 输出 + 验收点。所有 CLI 调用都跑在仓库分支 `claude/llm-e2e-testing-PLrap` 当前 commit 上，独立 in-memory / 临时 sqlite 数据库。
 
 ## 状态图例
@@ -20,6 +23,39 @@
 - **⏸️ 骨架待打通**：3 项
 - **❌ 未实现**：1 项
 - **🖥️ 等 GUI**：1 项
+
+## 测试套件总数
+
+```
+$ cargo test --workspace
+test result: ok. 5 passed; 0 failed; 0 ignored;  ─ jarvis-anthropic
+test result: ok. 10 passed; 0 failed; 0 ignored;  ─ jarvis-api
+test result: ok. 34 passed; 0 failed; 0 ignored;  ─ jarvis-cli
+test result: ok. 6 passed; 0 failed; 6 ignored;   ─ jarvis-codex（6 ignored = 真 codex e2e）
+test result: ok. 14 passed; 0 failed; 0 ignored;  ─ jarvis-control
+test result: ok. 13 passed; 0 failed; 0 ignored;  ─ jarvis-core
+test result: ok. 28 passed; 0 failed; 0 ignored;  ─ jarvis-db
+test result: ok. 21 passed; 0 failed; 0 ignored;  ─ jarvis-growth
+test result: ok. 44 passed; 0 failed; 0 ignored;  ─ jarvis-memory
+test result: ok. 3 passed; 0 failed; 0 ignored;   ─ jarvis-openai
+test result: ok. 69 passed; 0 failed; 0 ignored;  ─ jarvis-orchestrator
+test result: ok. 46 passed; 0 failed; 0 ignored;  ─ jarvis-router
+test result: ok. 18 passed; 0 failed; 0 ignored;  ─ jarvis-tools
+                                              ─────────────────────────
+                            311 通过 / 0 失败 / 6 ignored
+```
+
+```
+$ cargo test -p jarvis-codex --lib -- --ignored
+running 6 tests
+test tests::real_codex_smoke ... ok                         # 13s
+test tests::real_codex_english_casual_input ... ok
+test tests::real_codex_continue_existing_path ... ok
+test tests::real_codex_long_input_with_rule_hints ... ok
+test tests::real_codex_respects_allowed_agents_constraint ... ok
+test tests::real_codex_through_router ... ok                # 19s
+test result: ok. 6 passed; 0 failed (22.09s 并行)
+```
 
 ## 详细清单
 
