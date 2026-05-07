@@ -37,6 +37,12 @@ expect_contains() {
 }
 
 run() { "$JV" "$@" 2>&1; }
+# Force rule-only routing for sections that exercise the deterministic
+# rule layer (Section 1). Even when the operator runs with
+# JARVIS_JUDGE=codex (which we honour for the dedicated judge section
+# below), the rule-layer assertions must reflect the rule layer, not
+# whatever the LLM judge decides to override with.
+run_rule_only() { JARVIS_JUDGE= "$JV" "$@" 2>&1; }
 
 # ── 0. Sanity: binary exists and prints help ─────────────────────────
 hdr "0. binary sanity"
@@ -47,13 +53,13 @@ expect_contains "shows v1.9 handoff section"    "Handoff (v1.9)"   "$HELP"
 
 # ── 1. Routing (rule layer) ─────────────────────────────────────────
 hdr "1. Router / rule layer (PRD §5)"
-ROUTE_OUT=$(run route "openwrt 编译报错 no rule to make target")
+ROUTE_OUT=$(run_rule_only route "openwrt 编译报错 no rule to make target")
 expect_contains "devops rule hit"       "\"primary_intent\": \"devops.networking\"" "$ROUTE_OUT"
 expect_contains "agent_type=devops"     "\"agent_type\": \"devops\""                 "$ROUTE_OUT"
 expect_contains "tool_scope populated"  "shell.exec"                                 "$ROUTE_OUT"
 expect_contains "fallback_used=false"   "\"fallback_used\": false"                   "$ROUTE_OUT"
 
-CREATIVE=$(run route "帮我生成一个图标 prompt")
+CREATIVE=$(run_rule_only route "帮我生成一个图标 prompt")
 expect_contains "creative.icon (not creative.design)" "\"primary_intent\": \"creative.icon\"" "$CREATIVE"
 
 # ── 2. @mention ─────────────────────────────────────────────────────
