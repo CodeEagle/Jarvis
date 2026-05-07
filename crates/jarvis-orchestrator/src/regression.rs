@@ -208,6 +208,39 @@ impl RegressionOrchestrator {
         })
     }
 
+    /// List the most recent N regression reports, newest first.
+    pub fn list_recent(&self, limit: usize) -> DbResult<Vec<RegressionReport>> {
+        self.db.with(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, session_id, triggered_at, total_checks,
+                        passed, expected_changes, potential_bugs, items_json
+                   FROM regression_reports
+                  ORDER BY triggered_at DESC
+                  LIMIT ?1",
+            )?;
+            let rows = stmt
+                .query_map(params![limit as i64], |row| {
+                    let ts_str: String = row.get(2)?;
+                    let triggered_at = DateTime::parse_from_rfc3339(&ts_str)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now());
+                    let items_json: String = row.get(7)?;
+                    Ok(RegressionReport {
+                        id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        triggered_at,
+                        total_checks: row.get::<_, i64>(3)? as u32,
+                        passed: row.get::<_, i64>(4)? as u32,
+                        expected_changes: row.get::<_, i64>(5)? as u32,
+                        potential_bugs: row.get::<_, i64>(6)? as u32,
+                        items: serde_json::from_str(&items_json).unwrap_or_default(),
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+    }
+
     pub fn latest(&self) -> DbResult<Option<RegressionReport>> {
         self.db.with(|conn| {
             let mut stmt = conn.prepare(

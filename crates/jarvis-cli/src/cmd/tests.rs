@@ -153,6 +153,62 @@ fn cmd_memory_forget_returns_error_for_unknown_id() {
     assert!(msg.contains("not found"), "got: {msg}");
 }
 
+#[test]
+fn cmd_verifier_list_returns_saved_checks() {
+    let db = fresh_db();
+    let store = jarvis_orchestrator::walkthrough::WalkthroughStore::new(db.clone());
+    let doc = jarvis_orchestrator::walkthrough::new_draft("st_v", "sess_v", "coding", "demo");
+    store.save(&doc).unwrap();
+
+    let vstore = jarvis_orchestrator::verifier::VerifierStore::new(db.clone());
+    let mut check = jarvis_orchestrator::verifier::VerifierCheck::new(
+        &doc.id,
+        "sec_1",
+        jarvis_orchestrator::verifier::CheckType::FileExists,
+        "lib/sync.dart",
+    );
+    check.r#match = Some(true);
+    vstore.save(&check).unwrap();
+
+    let lines = cmd_verifier_list(&db, &doc.id).unwrap();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("file_exists"));
+    assert!(lines[0].contains("lib/sync.dart"));
+}
+
+#[test]
+fn cmd_verifier_status_shows_doc_state() {
+    let db = fresh_db();
+    let store = jarvis_orchestrator::walkthrough::WalkthroughStore::new(db.clone());
+    let doc = jarvis_orchestrator::walkthrough::new_draft("st_w", "sess_w", "coding", "demo");
+    store.save(&doc).unwrap();
+
+    let line = cmd_verifier_status(&db, &doc.id).unwrap();
+    assert!(line.contains("verification=pending"));
+    assert!(line.contains("approval=pending"));
+}
+
+#[test]
+fn cmd_verifier_status_unknown_doc_errors() {
+    let db = fresh_db();
+    let err = cmd_verifier_status(&db, "doc_unknown").unwrap_err();
+    assert!(err.to_string().contains("not found"));
+}
+
+#[test]
+fn cmd_regression_latest_when_empty() {
+    let db = fresh_db();
+    let line = cmd_regression_latest(&db).unwrap();
+    assert!(line.contains("(no regression report yet)"));
+}
+
+#[test]
+fn cmd_regression_list_when_empty() {
+    let db = fresh_db();
+    let lines = cmd_regression_list(&db, 10).unwrap();
+    assert!(lines.is_empty());
+}
+
 #[tokio::test]
 async fn cmd_judge_probe_reports_outcome_for_stub_judge() {
     struct OkJudge;

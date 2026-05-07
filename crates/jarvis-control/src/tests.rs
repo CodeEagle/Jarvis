@@ -290,6 +290,99 @@ async fn replicator_stops_on_peer_error_without_marking_delivered() {
 }
 
 #[tokio::test]
+async fn control_plane_records_turn_summary_on_continue_existing_resolved() {
+    use jarvis_core::session::{Session, SessionStatus};
+    use jarvis_core::time::now;
+    use jarvis_memory::compression::CompressionStore;
+    use std::sync::Arc;
+
+    let db = Db::in_memory().unwrap();
+    // Seed a session that explicit_reference will hit so the route
+    // resolves to continue_existing → turn_summary will be written.
+    let n = now();
+    let sess = Session {
+        id: "sess_existing".into(),
+        title: "OpenWrt 排查".into(),
+        domain: "devops".into(),
+        topic: "openwrt".into(),
+        summary: "...".into(),
+        long_summary: "...".into(),
+        active_entities: vec![],
+        unresolved: vec![],
+        resolved: vec![],
+        recent_message_ids: vec![],
+        memory_refs: vec![],
+        skill_refs: vec![],
+        status: SessionStatus::Active,
+        created_at: n,
+        updated_at: n,
+        last_active_at: n,
+    };
+    jarvis_db::session_repo::upsert_session(&db, &sess).unwrap();
+
+    struct ContinueJudge;
+    #[async_trait::async_trait]
+    impl jarvis_router::LlmJudge for ContinueJudge {
+        async fn judge(
+            &self,
+            _inputs: jarvis_router::JudgeInputs<'_>,
+        ) -> Option<jarvis_router::JudgeOutcome> {
+            Some(jarvis_router::JudgeOutcome {
+                primary_intent: "devops.networking".into(),
+                secondary_intents: vec![],
+                domain: "devops".into(),
+                topic: "openwrt".into(),
+                session_action: jarvis_core::route::SessionAction::ContinueExisting,
+                agent_type: "devops".into(),
+                confidence: 0.95,
+                clarification_needed: false,
+                router_notes: "judge says continue".into(),
+            })
+        }
+    }
+    let cp = ControlPlane::new(db.clone());
+    let resp = cp
+        .handle_user_input_with_judge(
+            "继续 OpenWrt 排查".into(),
+            Some("sess_existing".into()),
+            vec![],
+            Arc::new(ContinueJudge),
+        )
+        .await;
+    match resp {
+        HandledResponse::Resolved { decision, .. } => {
+            assert_eq!(decision.session_action, jarvis_core::route::SessionAction::ContinueExisting);
+            // TurnSummary written for the continued session.
+            let store = CompressionStore::new(db);
+            let rows = store.list_turn_summaries(
+                decision.target_session_id.as_deref().unwrap_or("sess_existing"),
+                10,
+            ).unwrap();
+            assert!(
+                !rows.is_empty(),
+                "expected at least one TurnSummary recorded after Resolved"
+            );
+            assert!(rows[0].user_goal.contains("OpenWrt"));
+        }
+        HandledResponse::Fallback { message, .. } => {
+            panic!("expected Resolved, got Fallback: {message}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn control_plane_skips_turn_summary_for_create_new() {
+    use jarvis_memory::compression::CompressionStore;
+    let db = Db::in_memory().unwrap();
+    let cp = ControlPlane::new(db.clone());
+    // 完全新话题；session_action 会是 create_new；不应写 turn_summary
+    let _ = cp.handle_user_input("hello world".into(), None, vec![]).await;
+    let store = CompressionStore::new(db);
+    let rows = store.list_turn_summaries("any_session", 10).unwrap();
+    assert!(rows.is_empty(), "create_new shouldn't trigger turn_summary");
+}
+
+#[tokio::test]
 async fn control_plane_with_judge_takes_judge_outcome() {
     use std::sync::Arc;
     struct StubJudge;

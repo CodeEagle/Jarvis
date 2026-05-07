@@ -510,6 +510,96 @@ pub fn cmd_walkthrough_reject(
     ))
 }
 
+/// List the verifier checks already saved for a walkthrough doc.
+/// Read-only — doesn't run anything; callers wanting to actually
+/// re-execute checks need a populated worker driver (see PRD §8.15).
+pub fn cmd_verifier_list(
+    db: &Db,
+    doc_id: &str,
+) -> Result<Vec<String>, CmdError> {
+    if doc_id.is_empty() {
+        return Err(CmdError::MissingArg("walkthrough doc id"));
+    }
+    let store = jarvis_orchestrator::verifier::VerifierStore::new(db.clone());
+    let checks = store.list_for_doc(doc_id)?;
+    Ok(checks
+        .into_iter()
+        .map(|c| {
+            format!(
+                "{}  type={}  match={}  expected='{}'  discrepancy='{}'",
+                c.id,
+                c.check_type.as_str(),
+                c.r#match
+                    .map(|b| if b { "true" } else { "false" })
+                    .unwrap_or("?"),
+                render::truncate(&c.expected, 40),
+                render::truncate(c.discrepancy.as_deref().unwrap_or(""), 60),
+            )
+        })
+        .collect())
+}
+
+/// Show a walkthrough doc's verification + approval status one-liner.
+pub fn cmd_verifier_status(
+    db: &Db,
+    doc_id: &str,
+) -> Result<String, CmdError> {
+    if doc_id.is_empty() {
+        return Err(CmdError::MissingArg("walkthrough doc id"));
+    }
+    let store = jarvis_orchestrator::walkthrough::WalkthroughStore::new(db.clone());
+    let doc = store
+        .get(doc_id)?
+        .ok_or_else(|| CmdError::Router(format!("walkthrough not found: {doc_id}")))?;
+    Ok(format!(
+        "{}  verification={}  approval={}  verified_at={}  notes='{}'",
+        doc.id,
+        doc.verification_status.as_str(),
+        doc.approval_status.as_str(),
+        doc.verified_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_else(|| "(none)".into()),
+        render::truncate(doc.verification_notes.as_deref().unwrap_or(""), 80),
+    ))
+}
+
+pub fn cmd_regression_latest(db: &Db) -> Result<String, CmdError> {
+    let orch = jarvis_orchestrator::regression::RegressionOrchestrator::new(db.clone());
+    match orch.latest()? {
+        None => Ok("(no regression report yet)".into()),
+        Some(r) => Ok(format!(
+            "{}  triggered_at={}  total={}  passed={}  expected_changes={}  potential_bugs={}",
+            r.id,
+            r.triggered_at.to_rfc3339(),
+            r.total_checks,
+            r.passed,
+            r.expected_changes,
+            r.potential_bugs,
+        )),
+    }
+}
+
+pub fn cmd_regression_list(
+    db: &Db,
+    limit: usize,
+) -> Result<Vec<String>, CmdError> {
+    let orch = jarvis_orchestrator::regression::RegressionOrchestrator::new(db.clone());
+    let rows = orch.list_recent(limit)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            format!(
+                "{}  {}  total={}  passed={}  bugs={}",
+                r.id,
+                r.triggered_at.to_rfc3339(),
+                r.total_checks,
+                r.passed,
+                r.potential_bugs,
+            )
+        })
+        .collect())
+}
+
 pub fn cmd_outbox_pending(db: &Db) -> Result<String, CmdError> {
     let n = jarvis_db::outbox::pending_count(db)?;
     Ok(format!("pending outbox rows: {n}"))

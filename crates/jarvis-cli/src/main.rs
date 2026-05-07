@@ -178,6 +178,40 @@ async fn main() -> anyhow::Result<()> {
         Some("maintenance") => maintenance_command(db, &args[2..]).await?,
         Some("demo") => demo_command(db).await?,
         Some("judge") => judge_command(&args[2..]).await?,
+        Some("verifier") => {
+            let sub = args.get(2).map(String::as_str);
+            match sub {
+                Some("list") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    for line in jarvis_cli::cmd_verifier_list(&db, &id)? {
+                        println!("{line}");
+                    }
+                }
+                Some("status") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    println!("{}", jarvis_cli::cmd_verifier_status(&db, &id)?);
+                }
+                _ => println!("Usage: verifier list <doc_id> | verifier status <doc_id>"),
+            }
+        }
+        Some("regression") => {
+            let sub = args.get(2).map(String::as_str);
+            match sub {
+                Some("latest") | None => {
+                    println!("{}", jarvis_cli::cmd_regression_latest(&db)?);
+                }
+                Some("list") => {
+                    let limit = args
+                        .get(3)
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(20usize);
+                    for line in jarvis_cli::cmd_regression_list(&db, limit)? {
+                        println!("{line}");
+                    }
+                }
+                Some(other) => anyhow::bail!("unknown regression subcommand: {other}"),
+            }
+        }
         Some("--help") | Some("-h") | Some("help") | None => print_usage(),
         Some(other) => {
             eprintln!("unknown subcommand: {other}\n");
@@ -772,6 +806,12 @@ Growth & maintenance:
   jarvis outbox                        outbox pending count
   jarvis maintenance [scope]           run Dream lint + cluster once
   jarvis dashboard [--json]            counters summary
+
+Verification & Regression:
+  jarvis verifier list <doc_id>        list saved verifier checks for a walkthrough
+  jarvis verifier status <doc_id>      show verification + approval status
+  jarvis regression latest             show most recent regression report
+  jarvis regression list [limit]       list regression reports, newest first
 
 Provider:
   jarvis judge probe                   verify selected JARVIS_JUDGE adapter is live
