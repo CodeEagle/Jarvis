@@ -73,6 +73,10 @@ impl Scheduler {
         if let Some(p) = self.spawn_persona_sync() {
             handles.push(p);
         }
+        // TODO §15.7.6 storage-tiering: when TierConfig lands, hook
+        // a daily run_tier_migration job here. Add tier_migration_period
+        // + Option<TierConfig> to SchedulerConfig.
+        // See docs/eng/storage-tiering.md.
         handles
     }
 

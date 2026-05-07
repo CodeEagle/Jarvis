@@ -1494,6 +1494,104 @@ EOF
     );
 }
 
+// ── synthesizer arbitration (PRD §27.6) ─────────────────────────────────
+
+fn synth_candidate(agent_type: &str, status: sub_task::SubTaskStatus, tokens: u32, artifacts: usize) -> synthesizer::Candidate {
+    synthesizer::Candidate {
+        agent_type: agent_type.to_string(),
+        result: sub_task::SubTaskResult {
+            sub_task_id: format!("st_{agent_type}"),
+            status,
+            summary: format!("ran by {agent_type}"),
+            artifact_ids: (0..artifacts).map(|i| format!("art_{agent_type}_{i}")).collect(),
+            escalation: None,
+            token_used: tokens,
+            tool_calls_count: 0,
+            completed_at: chrono::Utc::now(),
+        },
+    }
+}
+
+#[test]
+fn synthesizer_returns_none_for_empty_candidates() {
+    let outcome = synthesizer::arbitrate(&[], synthesizer::ArbitrationStrategy::ReviewerTakesPrecedence);
+    assert!(outcome.is_none());
+}
+
+#[test]
+fn synthesizer_reviewer_wins_regardless_of_tokens() {
+    let candidates = vec![
+        synth_candidate("coding", sub_task::SubTaskStatus::Success, 5000, 5),
+        synth_candidate("verifier", sub_task::SubTaskStatus::Success, 200, 0),
+        synth_candidate("research", sub_task::SubTaskStatus::Success, 3000, 2),
+    ];
+    let outcome = synthesizer::arbitrate(
+        &candidates,
+        synthesizer::ArbitrationStrategy::ReviewerTakesPrecedence,
+    )
+    .unwrap();
+    assert_eq!(outcome.winner_agent_type, "verifier");
+    assert!(outcome.reason.contains("§27.6"));
+}
+
+#[test]
+fn synthesizer_reviewer_strategy_falls_back_to_tokens_when_no_reviewer() {
+    let candidates = vec![
+        synth_candidate("coding", sub_task::SubTaskStatus::Success, 1000, 1),
+        synth_candidate("research", sub_task::SubTaskStatus::Success, 5000, 1),
+    ];
+    let outcome = synthesizer::arbitrate(
+        &candidates,
+        synthesizer::ArbitrationStrategy::ReviewerTakesPrecedence,
+    )
+    .unwrap();
+    assert_eq!(outcome.winner_agent_type, "research"); // higher tokens
+}
+
+#[test]
+fn synthesizer_highest_tokens_picks_max_among_successes() {
+    let candidates = vec![
+        synth_candidate("coding", sub_task::SubTaskStatus::Success, 800, 5),
+        synth_candidate("research", sub_task::SubTaskStatus::Failed, 9999, 0),
+        synth_candidate("creative", sub_task::SubTaskStatus::Success, 2000, 0),
+    ];
+    let outcome = synthesizer::arbitrate(
+        &candidates,
+        synthesizer::ArbitrationStrategy::HighestTokenSuccess,
+    )
+    .unwrap();
+    assert_eq!(outcome.winner_agent_type, "creative"); // failed research excluded
+}
+
+#[test]
+fn synthesizer_most_artifacts_wins() {
+    let candidates = vec![
+        synth_candidate("coding", sub_task::SubTaskStatus::Success, 100, 7),
+        synth_candidate("research", sub_task::SubTaskStatus::Success, 9999, 1),
+    ];
+    let outcome = synthesizer::arbitrate(
+        &candidates,
+        synthesizer::ArbitrationStrategy::MostArtifacts,
+    )
+    .unwrap();
+    assert_eq!(outcome.winner_agent_type, "coding"); // 7 > 1 artifacts
+}
+
+#[test]
+fn synthesizer_falls_back_when_all_failed() {
+    let candidates = vec![
+        synth_candidate("coding", sub_task::SubTaskStatus::Failed, 100, 0),
+        synth_candidate("research", sub_task::SubTaskStatus::Failed, 500, 0),
+    ];
+    let outcome = synthesizer::arbitrate(
+        &candidates,
+        synthesizer::ArbitrationStrategy::HighestTokenSuccess,
+    )
+    .unwrap();
+    assert_eq!(outcome.winner_agent_type, "research"); // 500 > 100
+    assert!(outcome.reason.contains("least-bad"));
+}
+
 // ── durable workspace lock ──────────────────────────────────────────────
 
 #[test]

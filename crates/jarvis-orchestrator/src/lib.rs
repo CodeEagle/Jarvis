@@ -16,6 +16,7 @@ pub mod pipeline;
 pub mod regression;
 pub mod steer;
 pub mod steer_adapter;
+pub mod synthesizer;
 pub mod worker_driver;
 pub mod sub_task;
 pub mod task_tree;

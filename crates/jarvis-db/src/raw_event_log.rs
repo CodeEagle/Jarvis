@@ -46,6 +46,11 @@ impl RawEventKind {
     }
 }
 
+// TODO §15.7.6 storage-tiering: when tiering ships, enrich
+// AppendEvent / RawEvent with `tier='hot'` default + add
+// list_by_tier_older_than / transition_to_warm / transition_to_cold.
+// See docs/eng/storage-tiering.md.
+
 #[derive(Debug, Clone)]
 pub struct AppendEvent<'a> {
     pub event_type: RawEventKind,
