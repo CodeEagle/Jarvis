@@ -382,6 +382,18 @@ async fn chat_repl(db: Db) -> anyhow::Result<()> {
     } else {
         None
     };
+    // Load LLM config + a single Completion client for the REPL's
+    // lifetime. Missing config is fine — the REPL still routes and
+    // shows decisions; it just can't synthesise replies.
+    let llm_cfg = jarvis_llm::load_default().unwrap_or_default();
+    let llm_client: Option<std::sync::Arc<dyn jarvis_llm::Completion>> =
+        if llm_cfg.default_model.is_some() {
+            Some(std::sync::Arc::new(jarvis_llm::GenAiCompletion::new()))
+        } else {
+            None
+        };
+    let agent_registry = jarvis_router::builtin_agents();
+
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let banner = match judge_kind.as_deref() {
@@ -389,6 +401,12 @@ async fn chat_repl(db: Db) -> anyhow::Result<()> {
         _ => "Jarvis v0.1 — chat REPL. Type :quit to exit.",
     };
     println!("{banner}");
+    match llm_cfg.default_model.as_deref() {
+        Some(m) => println!("  · model = {m}"),
+        None => println!(
+            "  · no default model — `jarvis model set anthropic/claude-sonnet-4-6` to enable replies."
+        ),
+    }
 
     loop {
         print!("> ");
@@ -437,6 +455,24 @@ async fn chat_repl(db: Db) -> anyhow::Result<()> {
                     println!("  ↳ user @ specified {}", decision.agent_type);
                 }
                 eprintln!("  diag: {diagnostics_summary}");
+
+                if let (Some(client), Some(model)) = (
+                    llm_client.as_ref(),
+                    llm_cfg.default_model.as_deref(),
+                ) {
+                    if let Err(msg) = run_completion_turn(
+                        client.as_ref(),
+                        model,
+                        &llm_cfg,
+                        &agent_registry,
+                        &decision.agent_type,
+                        line,
+                    )
+                    .await
+                    {
+                        println!("  ↳ {msg}");
+                    }
+                }
             }
             jarvis_control::HandledResponse::Fallback {
                 message,
@@ -446,6 +482,71 @@ async fn chat_repl(db: Db) -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+/// Single-turn completion against the configured default model.
+/// Looks up the agent definition matching `agent_type`, renders the
+/// stable system prompt block, sends [system, user], and prints the
+/// reply with model id, elapsed time, and token usage.
+///
+/// Returns `Err(message)` for soft failures (invalid id, missing key,
+/// upstream error) so the caller can print a one-line `↳ ...` note
+/// without crashing the REPL.
+async fn run_completion_turn(
+    client: &dyn jarvis_llm::Completion,
+    model: &str,
+    llm_cfg: &jarvis_llm::LlmConfig,
+    registry: &[jarvis_core::agent::AgentDefinition],
+    agent_type: &str,
+    user_input: &str,
+) -> Result<(), String> {
+    let parsed = jarvis_llm::ModelId::parse(model)
+        .map_err(|e| format!("invalid model id `{model}`: {e}"))?;
+    if !jarvis_llm::provider_authed(&parsed.provider, llm_cfg) {
+        let env = jarvis_llm::provider_env_var(&parsed.provider, llm_cfg)
+            .unwrap_or_else(|| "<none>".into());
+        return Err(format!(
+            "provider `{}` not authed (set {}); skipping completion",
+            parsed.provider, env
+        ));
+    }
+    let agent = registry
+        .iter()
+        .find(|a| a.r#type == agent_type)
+        .or_else(|| registry.iter().find(|a| a.r#type == "general"))
+        .ok_or_else(|| "no agent matched and `general` is missing".to_string())?;
+    let system = jarvis_router::render_stable_block(&jarvis_router::StablePromptInputs {
+        agent,
+        persona: None,
+        framework_directives: &[],
+    });
+    let req = jarvis_llm::CompletionRequest::new(
+        model,
+        vec![
+            jarvis_llm::ChatMessage::system(system),
+            jarvis_llm::ChatMessage::user(user_input.to_string()),
+        ],
+    )
+    .with_max_tokens(1024);
+    let started = std::time::Instant::now();
+    let reply = client
+        .chat(req)
+        .await
+        .map_err(|e| format!("completion failed: {e}"))?;
+    let ms = started.elapsed().as_millis();
+    let usage = reply
+        .usage
+        .map(|u| format!(" · in={} out={}", u.input_tokens, u.output_tokens))
+        .unwrap_or_default();
+    println!(
+        "\n{} {}\n  ({} · {}ms{})\n",
+        agent.avatar_emoji,
+        reply.text.trim(),
+        reply.model,
+        ms,
+        usage,
+    );
     Ok(())
 }
 
@@ -938,12 +1039,18 @@ jarvis route <input> [--json]
         "chat" => "\
 jarvis chat
 
-  Interactive REPL. Reads stdin, routes each line, prints decision.
-  Type :quit to exit.
+  Interactive REPL. Reads stdin, routes each line, prints decision,
+  and (when a default model is configured) calls the model and prints
+  its reply tagged with the chosen agent. Type :quit to exit.
+
+  Configure the model with `jarvis model set <provider/model>`. When
+  no model is set, the REPL still routes and prints decisions but
+  cannot synthesise replies.
 
   Env:
     JARVIS_JUDGE=codex          Route via codex LLM judge.
     JARVIS_FALLBACK_SECS=<n>    Override fallback SLA (default 180s with judge).
+    ANTHROPIC_API_KEY / OPENAI_API_KEY / …  Auth for the chosen provider.
 ",
         "memory" => "\
 jarvis memory <subcommand>
