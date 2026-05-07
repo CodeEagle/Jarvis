@@ -13,6 +13,7 @@ members = [
     "crates/jarvis-anthropic",
     "crates/jarvis-openai",
     "crates/jarvis-codex",
+    "crates/jarvis-llm",
     "crates/jarvis-cli",
 ]
 
@@ -43,6 +44,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+genai = "0.5"
 
 jarvis-core         = { path = "crates/jarvis-core" }
 jarvis-db           = { path = "crates/jarvis-db" }
@@ -56,6 +58,7 @@ jarvis-api          = { path = "crates/jarvis-api" }
 jarvis-anthropic    = { path = "crates/jarvis-anthropic" }
 jarvis-openai       = { path = "crates/jarvis-openai" }
 jarvis-codex        = { path = "crates/jarvis-codex" }
+jarvis-llm          = { path = "crates/jarvis-llm" }
 
 [profile.release]
 lto = "thin"
