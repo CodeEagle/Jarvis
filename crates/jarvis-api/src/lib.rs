@@ -37,6 +37,7 @@ use tokio::net::TcpListener;
 pub type ApiBody = BoxBody<Bytes, Infallible>;
 use tracing::{info, warn};
 
+pub mod dashboard_html;
 pub mod handlers;
 pub mod stream;
 
@@ -88,6 +89,9 @@ async fn handle(
 
     let result = match (method.clone(), path.as_str()) {
         (Method::GET, "/healthz") => Ok(json_ok(&serde_json::json!({"ok": true}))),
+        (Method::GET, "/dashboard") | (Method::GET, "/dashboard/") => Ok(html_ok(
+            dashboard_html::DASHBOARD_HTML,
+        )),
         (Method::POST, "/router/input") => route_input(&state, req).await,
         (Method::GET, "/sessions/recent") => handlers::recent_sessions(&state.db),
         (Method::GET, "/growth/events") => handlers::growth_events(&state.db),
@@ -179,6 +183,14 @@ fn error_response(err: ApiError) -> Response<Full<Bytes>> {
         .status(status)
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(body)))
+        .unwrap()
+}
+
+pub(crate) fn html_ok(body: &'static str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .body(Full::new(Bytes::from_static(body.as_bytes())))
         .unwrap()
 }
 

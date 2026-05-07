@@ -394,6 +394,41 @@ async fn hashing_embedder_normalises_to_unit_length() {
 }
 
 #[tokio::test]
+async fn vector_store_persist_and_load_round_trip() {
+    let db = Db::in_memory().unwrap();
+    // memory_embeddings has a foreign key to memories(id), so we
+    // insert a memory first.
+    let mgr = MemoryManager::new(db.clone());
+    let outcome = mgr
+        .write(manager::WriteRequest {
+            r#type: MemoryType::PreferenceMemory,
+            scope: "global",
+            content: "openwrt dns hosts",
+            entities: vec![],
+            source_type: SourceType::UserExplicit,
+            source_trace_id: None,
+            tier: 1,
+            emotion_energy: 0.0,
+            emotion_polarity: EmotionPolarity::Neutral,
+            reason: None,
+        })
+        .unwrap();
+
+    let store = vectors::VectorStore::new();
+    let embedder = vectors::HashingEmbedder::new(64);
+    let vec = embedder.embed("openwrt dns hosts").await.unwrap();
+    store.insert_persist(&db, &outcome.id, vec.clone()).unwrap();
+    assert_eq!(jarvis_db::embeddings::count(&db).unwrap(), 1);
+
+    let revived = vectors::VectorStore::new();
+    let n = revived.load_from_db(&db).unwrap();
+    assert_eq!(n, 1);
+    let q = embedder.embed("openwrt").await.unwrap();
+    let hits = revived.search(&q, 5, 0.0);
+    assert_eq!(hits[0].0, outcome.id);
+}
+
+#[tokio::test]
 async fn vector_store_finds_nearest_neighbour() {
     let embedder = vectors::HashingEmbedder::new(64);
     let store = vectors::VectorStore::new();

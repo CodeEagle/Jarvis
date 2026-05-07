@@ -158,6 +158,137 @@ fn scheduler_config_defaults_24h_lint() {
     assert_eq!(cfg.scope, "global");
 }
 
+// ── replication daemon ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn replicator_drains_pending_rows_to_peer() {
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use hyper::body::Incoming;
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper::{Request, Response, StatusCode};
+    use hyper_util::rt::TokioIo;
+    use std::convert::Infallible;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let received_clone = received.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _peer) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let received = received_clone.clone();
+            let io = TokioIo::new(stream);
+            tokio::spawn(async move {
+                let svc = service_fn(move |req: Request<Incoming>| {
+                    let received = received.clone();
+                    async move {
+                        use http_body_util::BodyExt;
+                        let body = req.into_body().collect().await.unwrap().to_bytes();
+                        received
+                            .lock()
+                            .unwrap()
+                            .push(String::from_utf8_lossy(&body).to_string());
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(StatusCode::OK)
+                                .body(Full::new(Bytes::from("ok")))
+                                .unwrap(),
+                        )
+                    }
+                });
+                let _ = http1::Builder::new().serve_connection(io, svc).await;
+            });
+        }
+    });
+
+    let db = Db::in_memory().unwrap();
+    for i in 0..3 {
+        jarvis_db::outbox::enqueue(
+            &db,
+            jarvis_db::outbox::EnqueueRequest {
+                kind: "memory.upsert",
+                target_table: "memories",
+                target_id: &format!("m_{i}"),
+                payload_json: "{\"x\":1}",
+            },
+        )
+        .unwrap();
+    }
+    let cfg = replication::ReplicationConfig {
+        peer_endpoint: format!("http://{addr}/replicate"),
+        ..Default::default()
+    };
+    let r = replication::Replicator::new(db.clone(), cfg);
+    let n = r.drain_once().await.unwrap();
+    assert_eq!(n, 3);
+    assert_eq!(jarvis_db::outbox::pending_count(&db).unwrap(), 0);
+    assert_eq!(received.lock().unwrap().len(), 3);
+    server.abort();
+}
+
+#[tokio::test]
+async fn replicator_stops_on_peer_error_without_marking_delivered() {
+    use bytes::Bytes;
+    use http_body_util::Full;
+    use hyper::body::Incoming;
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper::{Request, Response, StatusCode};
+    use hyper_util::rt::TokioIo;
+    use std::convert::Infallible;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _peer) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let io = TokioIo::new(stream);
+            tokio::spawn(async move {
+                let svc = service_fn(|_req: Request<Incoming>| async {
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Full::new(Bytes::from("nope")))
+                            .unwrap(),
+                    )
+                });
+                let _ = http1::Builder::new().serve_connection(io, svc).await;
+            });
+        }
+    });
+
+    let db = Db::in_memory().unwrap();
+    jarvis_db::outbox::enqueue(
+        &db,
+        jarvis_db::outbox::EnqueueRequest {
+            kind: "x",
+            target_table: "memories",
+            target_id: "a",
+            payload_json: "{}",
+        },
+    )
+    .unwrap();
+    let cfg = replication::ReplicationConfig {
+        peer_endpoint: format!("http://{addr}/replicate"),
+        ..Default::default()
+    };
+    let r = replication::Replicator::new(db.clone(), cfg);
+    let n = r.drain_once().await.unwrap();
+    assert_eq!(n, 0);
+    assert_eq!(jarvis_db::outbox::pending_count(&db).unwrap(), 1);
+    server.abort();
+}
+
 #[tokio::test]
 async fn control_plane_falls_back_when_budget_too_tight() {
     // Set fallback budget to 1ms so the router can't beat it.

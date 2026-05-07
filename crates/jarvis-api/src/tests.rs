@@ -139,6 +139,22 @@ async fn session_messages_returns_chronological() {
     assert_eq!(json.as_array().unwrap().len(), 3);
 }
 
+#[test]
+fn dashboard_html_contains_known_tile_keys() {
+    use crate::dashboard_html::DASHBOARD_HTML;
+    for key in [
+        "active_sessions",
+        "raw_event_count",
+        "memory_count",
+        "outbox_pending",
+        "route_decisions",
+        "promoted_artifacts",
+    ] {
+        assert!(DASHBOARD_HTML.contains(key), "missing tile {key}");
+    }
+    assert!(DASHBOARD_HTML.contains("/dashboard/metrics"));
+}
+
 #[tokio::test]
 async fn dashboard_metrics_returns_required_fields() {
     let state = fresh_state();

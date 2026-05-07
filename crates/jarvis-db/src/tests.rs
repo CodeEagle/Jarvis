@@ -401,6 +401,55 @@ fn outbox_enqueue_and_drain() {
 }
 
 #[test]
+fn outbox_update_to_other_columns_blocked() {
+    let db = fresh_db();
+    let _ = outbox::enqueue(
+        &db,
+        outbox::EnqueueRequest {
+            kind: "x",
+            target_table: "memories",
+            target_id: "a",
+            payload_json: "{}",
+        },
+    )
+    .unwrap();
+    let err = db
+        .with(|conn| {
+            conn.execute(
+                "UPDATE outbox SET payload_json = '{\"hax\":1}' WHERE seq = 1",
+                [],
+            )
+            .map_err(error::DbError::Sqlite)?;
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(format!("{err}").contains("immutable"));
+}
+
+#[test]
+fn outbox_delete_blocked() {
+    let db = fresh_db();
+    let _ = outbox::enqueue(
+        &db,
+        outbox::EnqueueRequest {
+            kind: "x",
+            target_table: "memories",
+            target_id: "a",
+            payload_json: "{}",
+        },
+    )
+    .unwrap();
+    let err = db
+        .with(|conn| {
+            conn.execute("DELETE FROM outbox WHERE seq = 1", [])
+                .map_err(error::DbError::Sqlite)?;
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(format!("{err}").contains("append-only"));
+}
+
+#[test]
 fn outbox_seq_strictly_monotonic() {
     let db = fresh_db();
     let s1 = outbox::enqueue(

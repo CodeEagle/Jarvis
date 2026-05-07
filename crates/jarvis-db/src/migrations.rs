@@ -640,6 +640,38 @@ CREATE TABLE IF NOT EXISTS outbox (
 
 CREATE INDEX IF NOT EXISTS idx_outbox_pending
     ON outbox (delivered_at, seq);
+
+-- Outbox column-level immutability: only delivered_at may change.
+-- Any UPDATE that touches another column is rejected.
+CREATE TRIGGER IF NOT EXISTS trg_outbox_columns_immutable
+    BEFORE UPDATE ON outbox
+    BEGIN
+        SELECT CASE WHEN
+            new.seq          IS NOT old.seq          OR
+            new.ts           IS NOT old.ts           OR
+            new.kind         IS NOT old.kind         OR
+            new.target_table IS NOT old.target_table OR
+            new.target_id    IS NOT old.target_id    OR
+            new.payload_json IS NOT old.payload_json
+        THEN RAISE(ABORT, 'outbox columns are immutable except delivered_at')
+        END;
+    END;
+
+CREATE TRIGGER IF NOT EXISTS trg_outbox_no_delete
+    BEFORE DELETE ON outbox
+    BEGIN SELECT RAISE(ABORT, 'outbox is append-only'); END;
+
+-- ─── persistent vector store (Section 13.4) ────────────────────────────
+-- In-memory cosine search wins until sqlite-vec is wired in. Until
+-- then, this table is the durable mirror — embeddings survive
+-- restarts. Each row owns the canonical embedding for one memory id.
+
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    memory_id   TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+    dim         INTEGER NOT NULL,
+    vector_json TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 "#;
 
 pub fn run(conn: &Connection) -> DbResult<()> {

@@ -116,6 +116,33 @@ impl VectorStore {
         self.len() == 0
     }
 
+    /// Insert + persist to the durable `memory_embeddings` mirror
+    /// table. The `Db` argument keeps both views in lockstep so a
+    /// restart can `load_from_db` and recover the index.
+    pub fn insert_persist(
+        &self,
+        db: &jarvis_db::Db,
+        memory_id: impl Into<String>,
+        embedding: Vec<f32>,
+    ) -> jarvis_db::error::DbResult<()> {
+        let id = memory_id.into();
+        jarvis_db::embeddings::upsert(db, &id, &embedding)?;
+        self.insert(id, embedding);
+        Ok(())
+    }
+
+    /// Hydrate a VectorStore from the persistent mirror table. Use
+    /// at process startup; subsequent inserts go through
+    /// `insert_persist` to keep both sides in sync.
+    pub fn load_from_db(&self, db: &jarvis_db::Db) -> jarvis_db::error::DbResult<usize> {
+        let rows = jarvis_db::embeddings::list_all(db)?;
+        let n = rows.len();
+        for r in rows {
+            self.insert(r.memory_id, r.vector);
+        }
+        Ok(n)
+    }
+
     /// Return memory ids ranked by cosine similarity to `query`. Only
     /// hits with cosine ≥ `min_score` are returned.
     pub fn search(&self, query: &[f32], top_k: usize, min_score: f32) -> Vec<(String, f32)> {

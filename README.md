@@ -72,7 +72,7 @@ crates/
                         growth / trace / replay / audit / maintenance / serve
 ```
 
-**250 unit tests pass** across the workspace.
+**273 unit tests pass** across the workspace.
 
 ---
 

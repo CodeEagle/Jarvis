@@ -13,6 +13,7 @@
 
 pub mod audit_log;
 mod conn;
+pub mod embeddings;
 pub mod error;
 pub mod memory_change_log;
 pub mod memory_repo;

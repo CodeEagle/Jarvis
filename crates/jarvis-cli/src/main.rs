@@ -13,14 +13,8 @@ use std::env;
 use std::io::{self, BufRead, Write};
 
 use jarvis_control::ControlPlane;
-use jarvis_core::memory::{EmotionPolarity, MemoryType, SourceType};
 use jarvis_db::Db;
 use jarvis_growth::{ArtifactStatus, ArtifactType, Collector};
-use jarvis_memory::{
-    manager::{MemoryManager, WriteRequest},
-    Retrieval,
-};
-use jarvis_router::{Router, RouterInput};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,44 +24,116 @@ async fn main() -> anyhow::Result<()> {
     let db_path = env::var("JARVIS_DB").unwrap_or_else(|_| "jarvis.db".into());
     let db = Db::open(&db_path)?;
 
+    // --json strips the flag from argv and signals to the dispatcher.
+    let json_mode = args.iter().any(|a| a == "--json");
+    let args: Vec<String> = args.into_iter().filter(|a| a != "--json").collect();
+
     match args.get(1).map(String::as_str) {
         Some("route") => {
             let input = args
                 .get(2)
                 .cloned()
                 .unwrap_or_else(|| "帮我看个 OpenWrt 的报错".into());
-            let r = Router::new(db);
-            let (decision, diag) = r.route(RouterInput {
-                user_input: &input,
-                session_id_hint: None,
-                running_agent_types: &[],
-            })?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&decision).unwrap_or_default()
-            );
-            eprintln!("\n— diagnostics —");
-            eprintln!("rule_hints: {:?}", diag.rule_hints);
-            eprintln!("mention:    {:?}", diag.mention.mention_mode);
-            eprintln!("raw_seq:    {}", diag.raw_event_seq);
-            if let Some(w) = diag.mention_warning {
-                eprintln!("warning:    {w}");
-            }
+            let pretty = jarvis_cli::cmd_route(&db, &input)?;
+            println!("{pretty}");
         }
         Some("chat") => chat_repl(db).await?,
         Some("memory") => memory_command(db, &args[2..])?,
-        Some("raw-log") => raw_log_command(db, &args[2..])?,
+        Some("raw-log") => {
+            let session = args.get(2).cloned().unwrap_or_default();
+            for line in jarvis_cli::cmd_raw_log(&db, &session, 100)? {
+                println!("{line}");
+            }
+        }
         Some("growth") => growth_command(db, &args[2..])?,
         Some("trace") => trace_command(db, &args[2..])?,
         Some("replay") => replay_command(db, &args[2..])?,
-        Some("audit") => audit_command(db, &args[2..])?,
-        Some("trace-view") => trace_view_command(db, &args[2..])?,
-        Some("memory-history") => memory_history_command(db, &args[2..])?,
+        Some("audit") => {
+            let session = args.get(2).cloned().unwrap_or_default();
+            for line in jarvis_cli::cmd_audit(&db, &session, 100)? {
+                println!("{line}");
+            }
+        }
+        Some("trace-view") => {
+            let trace_id = args.get(2).cloned().unwrap_or_default();
+            for line in jarvis_cli::cmd_trace_view(&db, &trace_id)? {
+                println!("{line}");
+            }
+        }
+        Some("memory-history") => {
+            let memory_id = args.get(2).cloned().unwrap_or_default();
+            for line in jarvis_cli::cmd_memory_history(&db, &memory_id)? {
+                println!("{line}");
+            }
+        }
+        Some("dashboard") => {
+            if json_mode {
+                println!("{}", jarvis_cli::cmd_dashboard_summary_json(&db)?);
+            } else {
+                println!("{}", jarvis_cli::cmd_dashboard_summary(&db)?);
+            }
+        }
+        Some("sessions") => {
+            let sub = args.get(2).map(String::as_str);
+            match sub {
+                Some("list") | None => {
+                    for line in jarvis_cli::cmd_sessions_list(&db)? {
+                        println!("{line}");
+                    }
+                }
+                Some("messages") => {
+                    let session = args.get(3).cloned().unwrap_or_default();
+                    for line in jarvis_cli::cmd_session_messages(&db, &session, 200)? {
+                        println!("{line}");
+                    }
+                }
+                Some(other) => anyhow::bail!("unknown sessions subcommand: {other}"),
+            }
+        }
+        Some("skills") => {
+            for line in jarvis_cli::cmd_skills_list(&db)? {
+                println!("{line}");
+            }
+        }
+        Some("walkthrough") => {
+            let sub = args.get(2).map(String::as_str);
+            match sub {
+                Some("list") => {
+                    let session = args.get(3).cloned().unwrap_or_default();
+                    for line in jarvis_cli::cmd_walkthrough_list(&db, &session)? {
+                        println!("{line}");
+                    }
+                }
+                Some("approve") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    let actor = args.get(4).cloned().unwrap_or_else(|| "user".into());
+                    println!("{}", jarvis_cli::cmd_walkthrough_approve(&db, &id, &actor)?);
+                }
+                Some("reject") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    let actor = args.get(4).cloned().unwrap_or_else(|| "user".into());
+                    let reason = args.get(5).map(|s| s.as_str());
+                    println!(
+                        "{}",
+                        jarvis_cli::cmd_walkthrough_reject(&db, &id, &actor, reason)?
+                    );
+                }
+                _ => anyhow::bail!(
+                    "Usage: walkthrough list <session_id> | approve <id> [by] | reject <id> [by] [reason]; got {sub:?}"
+                ),
+            }
+        }
+        Some("outbox") => {
+            println!("{}", jarvis_cli::cmd_outbox_pending(&db)?);
+        }
         Some("serve") => serve_command(db, &args[2..]).await?,
         Some("maintenance") => maintenance_command(db, &args[2..]).await?,
         Some("demo") => demo_command(db).await?,
-        _ => {
+        Some("--help") | Some("-h") | Some("help") | None => print_usage(),
+        Some(other) => {
+            eprintln!("unknown subcommand: {other}\n");
             print_usage();
+            std::process::exit(2);
         }
     }
     Ok(())
@@ -138,36 +204,13 @@ fn memory_command(db: Db, args: &[String]) -> anyhow::Result<()> {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(" ");
-            anyhow::ensure!(!content.is_empty(), "memory write requires content");
-            let mgr = MemoryManager::new(db);
-            let outcome = mgr.write(WriteRequest {
-                r#type: MemoryType::PreferenceMemory,
-                scope: "global",
-                content: &content,
-                entities: vec![],
-                source_type: SourceType::UserExplicit,
-                source_trace_id: None,
-                tier: 1,
-                emotion_energy: 0.0,
-                emotion_polarity: EmotionPolarity::Neutral,
-                reason: Some("CLI"),
-            })?;
-            println!(
-                "wrote {} status={:?} trust={:.2}",
-                outcome.id, outcome.status, outcome.trust_score
-            );
+            println!("{}", jarvis_cli::cmd_memory_write(&db, &content, "global")?);
         }
         Some("list") => {
-            let r = Retrieval::new(db);
-            let results = r.retrieve("global", "", None, 50, 0.0)?;
-            for hit in results {
-                println!(
-                    "[{}] {} trust={:.2}",
-                    hit.memory.r#type.as_str(),
-                    hit.memory.content,
-                    hit.trust_now
-                );
+            for line in jarvis_cli::cmd_memory_list(&db, "global")? {
+                println!("{line}");
             }
+            return Ok(());
         }
         _ => {
             println!("Usage: memory write <text> | memory list");
@@ -176,6 +219,7 @@ fn memory_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)] // legacy helper, kept for reference
 fn raw_log_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     let session = args.first().cloned().unwrap_or_default();
     anyhow::ensure!(!session.is_empty(), "raw-log requires <session_id>");
@@ -291,6 +335,7 @@ fn replay_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)] // superseded by jarvis_cli::cmd_audit; kept for reference
 fn audit_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     let session = args.first().cloned().unwrap_or_default();
     anyhow::ensure!(!session.is_empty(), "audit requires <session_id>");
@@ -309,6 +354,7 @@ fn audit_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)] // superseded by jarvis_cli::cmd_trace_view
 fn trace_view_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     let trace_id = args.first().cloned().unwrap_or_default();
     anyhow::ensure!(!trace_id.is_empty(), "trace-view requires <trace_id>");
@@ -350,6 +396,7 @@ fn trace_view_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)] // superseded by jarvis_cli::cmd_memory_history
 fn memory_history_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     let memory_id = args.first().cloned().unwrap_or_default();
     anyhow::ensure!(!memory_id.is_empty(), "memory-history requires <memory_id>");
@@ -505,8 +552,33 @@ async fn demo_command(db: Db) -> anyhow::Result<()> {
 async fn serve_command(db: Db, args: &[String]) -> anyhow::Result<()> {
     let addr_str = args.first().cloned().unwrap_or_else(|| "127.0.0.1:7777".into());
     let addr: std::net::SocketAddr = addr_str.parse()?;
+
+    // Background scheduler (Dream lint / cluster / lock sweep).
+    let sched = jarvis_control::Scheduler::new(
+        db.clone(),
+        jarvis_control::SchedulerConfig::default(),
+    );
+    let sched_handles = sched.start();
+
+    // Optional outbox replication if peer endpoint is configured.
+    if let Ok(peer) = std::env::var("JARVIS_REPLICATION_PEER") {
+        let cfg = jarvis_control::ReplicationConfig {
+            peer_endpoint: peer,
+            auth_token: std::env::var("JARVIS_REPLICATION_TOKEN").ok(),
+            ..Default::default()
+        };
+        let rep = jarvis_control::Replicator::new(db.clone(), cfg);
+        // Spawn returns a JoinHandle that lives for the lifetime of
+        // the server; we deliberately let it run detached.
+        let _replication_handle = rep.spawn();
+    }
+
     let state = jarvis_api::ApiState { db };
-    jarvis_api::serve(state, addr).await
+    let result = jarvis_api::serve(state, addr).await;
+    for h in sched_handles {
+        h.abort();
+    }
+    result
 }
 
 async fn maintenance_command(db: Db, args: &[String]) -> anyhow::Result<()> {
@@ -530,25 +602,52 @@ async fn maintenance_command(db: Db, args: &[String]) -> anyhow::Result<()> {
 }
 
 fn print_usage() {
-    println!("Jarvis v0.4 CLI
+    println!("Jarvis v1.0 CLI
 
-Commands:
-  jarvis route <input>             run Router and print decision
-  jarvis chat                      interactive REPL
-  jarvis memory write <text>       record a user-explicit memory
-  jarvis memory list               list memories
-  jarvis raw-log <session_id>      dump raw_event_log
-  jarvis growth events [type]      list growth events
-  jarvis growth artifacts          list growth artifacts
-  jarvis trace <trace_id>          dump every raw event for a trace
-  jarvis replay <session> [iso]    point-in-time replay (default: now)
-  jarvis audit <session_id>        dump audit_log for a session
-  jarvis trace-view <trace_id>     pretty-print trace + audit
-  jarvis memory-history <mem_id>   show full Memory change log
-  jarvis maintenance [scope]       run Dream lint + cluster once
-  jarvis serve [host:port]         start HTTP API (default 127.0.0.1:7777)
+Routing & chat:
+  jarvis route <input>                 run Router and print decision
+  jarvis chat                          interactive REPL
+
+Memory:
+  jarvis memory write <text>           record a user-explicit memory
+  jarvis memory list                   list memories in scope `global`
+  jarvis memory-history <mem_id>       full memory_change_log for one memory
+
+Sessions:
+  jarvis sessions list                 list active sessions
+  jarvis sessions messages <sess>      recent messages for a session
+  jarvis raw-log <session_id>          dump raw_event_log
+  jarvis audit <session_id>            dump audit_log
+  jarvis trace <trace_id>              raw events for a trace
+  jarvis trace-view <trace_id>         pretty-print trace + audit
+  jarvis replay <session> [iso]        point-in-time replay (default: now)
+
+Walkthroughs & skills:
+  jarvis walkthrough list <session>    list walkthroughs for a session
+  jarvis walkthrough approve <id> [by] manually approve a walkthrough
+  jarvis walkthrough reject <id> [by] [reason]
+  jarvis skills                        list skill catalogue
+
+Growth & maintenance:
+  jarvis growth events [type]          list growth events
+  jarvis growth artifacts              list growth artifacts
+  jarvis outbox                        outbox pending count
+  jarvis maintenance [scope]           run Dream lint + cluster once
+  jarvis dashboard [--json]            counters summary
+
+Server / demo:
+  jarvis serve [host:port]             start HTTP API (default 127.0.0.1:7777)
+  jarvis demo                          one-shot end-to-end smoke test
+
+Flags:
+  --json                               JSON-format output (where supported)
 
 Env:
-  JARVIS_DB                        path to sqlite file (default: ./jarvis.db)
+  JARVIS_DB                            path to sqlite file (default: ./jarvis.db)
+  JARVIS_LOG                           log filter (default: info)
+  JARVIS_LOG_JSON=1                    JSON-format log output
+  JARVIS_REPLICATION_PEER              outbox replication endpoint
+  JARVIS_REPLICATION_TOKEN             bearer token for replication
+  ANTHROPIC_API_KEY / OPENAI_API_KEY   for LLM judge adapters
 ");
 }
