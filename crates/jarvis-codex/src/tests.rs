@@ -103,9 +103,44 @@ async fn judge_returns_none_on_missing_binary() {
     assert!(outcome.is_none());
 }
 
+/// Real end-to-end smoke test through the actual Router pipeline using
+/// a live codex subprocess. Verifies that CodexJudge plugs into
+/// `Router::route_with_judge` and produces a coherent decision.
+/// Run with: `cargo test -p jarvis-codex real_codex_through_router -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore]
+async fn real_codex_through_router() {
+    use jarvis_db::Db;
+    use jarvis_router::router::{Router, RouterInput};
+
+    let db = Db::in_memory().unwrap();
+    let router = Router::new(db);
+    let mut cfg = CodexConfig::default();
+    cfg.timeout = Duration::from_secs(180);
+    let judge = CodexJudge::new(cfg);
+
+    let (decision, _diag) = router
+        .route_with_judge(
+            RouterInput {
+                user_input: "openwrt 编译报错 no rule to make target",
+                session_id_hint: None,
+                running_agent_types: &[],
+            },
+            &judge,
+        )
+        .await
+        .expect("route_with_judge");
+
+    eprintln!("router+codex decision: {decision:#?}");
+    assert!(!decision.fallback_used, "judge should have produced an outcome");
+    assert!(!decision.agent_type.is_empty());
+    assert!(decision.confidence < 1.0);
+    assert!(decision.router_notes.contains("judge:"));
+}
+
 /// Real end-to-end smoke test against the locally-installed codex CLI.
 /// Requires `codex login` to have completed and the binary on PATH.
-/// Run with: `cargo test -p jarvis-codex --release real_codex_smoke -- --ignored --nocapture`.
+/// Run with: `cargo test -p jarvis-codex real_codex_smoke -- --ignored --nocapture`.
 #[tokio::test]
 #[ignore]
 async fn real_codex_smoke() {
