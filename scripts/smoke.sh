@@ -239,6 +239,15 @@ expect_contains "model list --json default"   "\"default_model\":\"anthropic/cla
 expect_contains "model list --json provider"  "\"name\":\"anthropic\"" "$LIST_JSON"
 SET_BAD=$(JARVIS_CONFIG="$MODEL_CFG" run model set badformat 2>&1 || true)
 expect_contains "model set rejects bad id"    "expected" "$SET_BAD"
+
+# OAuth provider (claude-cli) — auth status reflects whether the
+# `claude` CLI binary exists on PATH; no env var is required.
+JARVIS_CONFIG="$MODEL_CFG" run model set claude-cli/sonnet >/dev/null
+OAUTH_LIST=$(JARVIS_CONFIG="$MODEL_CFG" run model list)
+expect_contains "model list shows oauth provider" "oauth via" "$OAUTH_LIST"
+OAUTH_JSON=$(JARVIS_CONFIG="$MODEL_CFG" run model list --json)
+expect_contains "model list --json oauth_binary" "\"oauth_binary\":\"claude\"" "$OAUTH_JSON"
+expect_contains "model list --json no api_key_env" "\"api_key_env\":null" "$OAUTH_JSON"
 rm -f "$MODEL_CFG"
 
 # ── 12. Subcommand --help / --json consistency ──────────────────────

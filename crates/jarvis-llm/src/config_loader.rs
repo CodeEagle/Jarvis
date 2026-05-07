@@ -85,13 +85,35 @@ pub fn provider_env_var(provider: &str, cfg: &LlmConfig) -> Option<String> {
     Some(well_known.to_string())
 }
 
-/// True iff the provider's expected env var is set and non-empty
-/// according to `env_get`. Inject a getter so tests don't race against
-/// process env.
-pub fn provider_authed_with<F>(provider: &str, cfg: &LlmConfig, env_get: F) -> bool
+/// CLI binary that holds the OAuth credentials for an OAuth-only
+/// provider. When present, [`provider_authed_full`] short-circuits the
+/// env-var check and returns "ready" iff the binary is reachable on
+/// `$PATH` (the provider's own CLI handles token storage and refresh).
+pub fn provider_oauth_binary(provider: &str) -> Option<&'static str> {
+    match provider {
+        // Subprocess wrapper around Anthropic's `claude` CLI. Auth is
+        // OAuth held in `~/.claude/`; we just need the binary.
+        "claude-cli" => Some("claude"),
+        _ => None,
+    }
+}
+
+/// Auth check with both an env getter and a binary-presence checker
+/// injected — needed for OAuth providers where readiness depends on
+/// a sibling CLI being installed rather than an env var being set.
+pub fn provider_authed_full<E, B>(
+    provider: &str,
+    cfg: &LlmConfig,
+    env_get: E,
+    binary_present: B,
+) -> bool
 where
-    F: Fn(&str) -> Option<String>,
+    E: Fn(&str) -> Option<String>,
+    B: Fn(&str) -> bool,
 {
+    if let Some(bin) = provider_oauth_binary(provider) {
+        return binary_present(bin);
+    }
     let Some(env) = provider_env_var(provider, cfg) else {
         // Local provider — no auth required.
         return matches!(provider, "ollama" | "ollama_cloud");
@@ -99,7 +121,51 @@ where
     env_get(&env).map(|v| !v.is_empty()).unwrap_or(false)
 }
 
-/// Convenience over [`provider_authed_with`] that reads process env.
+/// Backwards-compatible wrapper that assumes no OAuth binaries are
+/// present. Existing tests call this with just an env getter.
+pub fn provider_authed_with<F>(provider: &str, cfg: &LlmConfig, env_get: F) -> bool
+where
+    F: Fn(&str) -> Option<String>,
+{
+    provider_authed_full(provider, cfg, env_get, |_| false)
+}
+
+/// Process-env convenience over [`provider_authed_full`] — checks both
+/// the well-known env var and `$PATH` for OAuth providers.
 pub fn provider_authed(provider: &str, cfg: &LlmConfig) -> bool {
-    provider_authed_with(provider, cfg, |k| std::env::var(k).ok())
+    provider_authed_full(
+        provider,
+        cfg,
+        |k| std::env::var(k).ok(),
+        binary_on_path,
+    )
+}
+
+/// True iff `name` resolves to an executable file on `$PATH`. Pure
+/// stdlib so we don't pull a `which`-style dep.
+pub fn binary_on_path(name: &str) -> bool {
+    let path_env = match std::env::var_os("PATH") {
+        Some(p) => p,
+        None => return false,
+    };
+    for dir in std::env::split_paths(&path_env) {
+        let candidate = dir.join(name);
+        if !candidate.is_file() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = candidate.metadata() {
+                if meta.permissions().mode() & 0o111 != 0 {
+                    return true;
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            return true;
+        }
+    }
+    false
 }

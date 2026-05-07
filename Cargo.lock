@@ -973,6 +973,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jarvis-claude-cli"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "jarvis-llm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "jarvis-cli"
 version = "0.1.0"
 dependencies = [
@@ -980,6 +995,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "jarvis-api",
+ "jarvis-claude-cli",
  "jarvis-codex",
  "jarvis-control",
  "jarvis-core",

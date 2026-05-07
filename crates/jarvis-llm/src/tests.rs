@@ -1,9 +1,16 @@
-use crate::completion::{ChatMessage, ChatRole, CompletionRequest};
+use crate::completion::{
+    ChatMessage, ChatRole, Completion, CompletionError, CompletionRequest, CompletionResponse,
+};
 use crate::config::{LlmConfig, ModelId, ModelIdParseError, ProviderConfig};
 use crate::config_loader::{
-    load_from_path, provider_authed_with, provider_env_var, save_to_path,
+    load_from_path, provider_authed_full, provider_authed_with, provider_env_var,
+    provider_oauth_binary, save_to_path,
 };
+use crate::router::CompletionRouter;
+use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 // ── ModelId parsing ─────────────────────────────────────────────────────
 
@@ -189,4 +196,141 @@ fn provider_authed_local_provider_needs_no_env() {
     let cfg = LlmConfig::default();
     let none = |_: &str| None::<String>;
     assert!(provider_authed_with("ollama", &cfg, &none));
+}
+
+// ── OAuth provider readiness ────────────────────────────────────────────
+
+#[test]
+fn provider_oauth_binary_known_for_claude_cli() {
+    assert_eq!(provider_oauth_binary("claude-cli"), Some("claude"));
+    assert_eq!(provider_oauth_binary("anthropic"), None);
+    assert_eq!(provider_oauth_binary("randomprovider"), None);
+}
+
+#[test]
+fn provider_authed_full_oauth_ready_when_binary_present() {
+    let cfg = LlmConfig::default();
+    let no_env = |_: &str| None::<String>;
+    let bin_present = |name: &str| name == "claude";
+    assert!(provider_authed_full(
+        "claude-cli",
+        &cfg,
+        &no_env,
+        &bin_present
+    ));
+}
+
+#[test]
+fn provider_authed_full_oauth_unready_when_binary_missing() {
+    let cfg = LlmConfig::default();
+    let no_env = |_: &str| None::<String>;
+    let bin_absent = |_: &str| false;
+    assert!(!provider_authed_full(
+        "claude-cli",
+        &cfg,
+        &no_env,
+        &bin_absent
+    ));
+}
+
+#[test]
+fn provider_authed_full_oauth_skips_env_var_path() {
+    // Even when the env var is set, claude-cli readiness must come
+    // from the binary check — the OAuth path is the source of truth.
+    let cfg = LlmConfig::default();
+    let env_set = |_: &str| Some("sk-ant-...".to_string());
+    let bin_absent = |_: &str| false;
+    assert!(!provider_authed_full(
+        "claude-cli",
+        &cfg,
+        &env_set,
+        &bin_absent
+    ));
+}
+
+// ── CompletionRouter dispatch ───────────────────────────────────────────
+
+struct RecordingBackend {
+    label: &'static str,
+    seen: Arc<Mutex<Vec<String>>>,
+}
+
+impl RecordingBackend {
+    fn new(label: &'static str) -> (Self, Arc<Mutex<Vec<String>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                label,
+                seen: seen.clone(),
+            },
+            seen,
+        )
+    }
+}
+
+#[async_trait]
+impl Completion for RecordingBackend {
+    async fn chat(
+        &self,
+        req: CompletionRequest,
+    ) -> Result<CompletionResponse, CompletionError> {
+        self.seen.lock().unwrap().push(req.model.clone());
+        Ok(CompletionResponse {
+            model: req.model,
+            text: format!("{}-reply", self.label),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn router_dispatches_to_registered_provider() {
+    let (claude_cli, claude_seen) = RecordingBackend::new("claude-cli");
+    let (genai, genai_seen) = RecordingBackend::new("genai");
+    let router = CompletionRouter::new(Box::new(genai))
+        .with_provider("claude-cli", Box::new(claude_cli));
+
+    let resp = router
+        .chat(CompletionRequest::new(
+            "claude-cli/sonnet",
+            vec![ChatMessage::user("hi")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.text, "claude-cli-reply");
+    assert_eq!(claude_seen.lock().unwrap().len(), 1);
+    assert!(genai_seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn router_falls_back_to_default_for_unknown_provider() {
+    let (claude_cli, claude_seen) = RecordingBackend::new("claude-cli");
+    let (genai, genai_seen) = RecordingBackend::new("genai");
+    let router = CompletionRouter::new(Box::new(genai))
+        .with_provider("claude-cli", Box::new(claude_cli));
+
+    let resp = router
+        .chat(CompletionRequest::new(
+            "anthropic/claude-sonnet-4-6",
+            vec![ChatMessage::user("hi")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.text, "genai-reply");
+    assert!(claude_seen.lock().unwrap().is_empty());
+    assert_eq!(genai_seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn router_rejects_invalid_model_id() {
+    let (genai, _) = RecordingBackend::new("genai");
+    let router = CompletionRouter::new(Box::new(genai));
+    let err = router
+        .chat(CompletionRequest::new(
+            "no-slash-here",
+            vec![ChatMessage::user("hi")],
+        ))
+        .await
+        .expect_err("should fail");
+    assert!(matches!(err, CompletionError::InvalidModelId(_)));
 }

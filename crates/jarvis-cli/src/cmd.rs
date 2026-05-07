@@ -1122,6 +1122,8 @@ pub fn cmd_model_set(id: &str) -> Result<String, CmdError> {
 }
 
 /// Pretty list of providers (config + auth status) for human eyes.
+/// OAuth providers (those with a sibling CLI holding the credentials)
+/// surface differently: no env var, ready iff the binary is on PATH.
 pub fn cmd_model_list() -> Result<Vec<String>, CmdError> {
     let cfg = jarvis_llm::load_default()
         .map_err(|e| CmdError::Config(e.to_string()))?;
@@ -1140,16 +1142,27 @@ pub fn cmd_model_list() -> Result<Vec<String>, CmdError> {
     } else {
         lines.push("providers:".into());
         for (name, provider) in &cfg.providers {
-            let env = jarvis_llm::provider_env_var(name, &cfg)
-                .unwrap_or_else(|| "(none)".into());
+            let oauth_bin = jarvis_llm::provider_oauth_binary(name);
+            let auth_label = match oauth_bin {
+                Some(b) => format!("oauth via `{b}` CLI"),
+                None => format!(
+                    "env={}",
+                    jarvis_llm::provider_env_var(name, &cfg)
+                        .unwrap_or_else(|| "(none)".into())
+                ),
+            };
             let authed = jarvis_llm::provider_authed(name, &cfg);
-            let status = if authed { "ready" } else { "missing key" };
+            let status = match (authed, oauth_bin) {
+                (true, _) => "ready",
+                (false, Some(_)) => "binary missing",
+                (false, None) => "missing key",
+            };
             let base = provider
                 .base_url
                 .as_deref()
                 .map(|u| format!(" base_url={u}"))
                 .unwrap_or_default();
-            lines.push(format!("  {name}  env={env}  {status}{base}"));
+            lines.push(format!("  {name}  {auth_label}  {status}{base}"));
         }
     }
     Ok(lines)
@@ -1166,6 +1179,7 @@ pub fn cmd_model_list_json() -> Result<String, CmdError> {
             serde_json::json!({
                 "name": name,
                 "api_key_env": jarvis_llm::provider_env_var(name, &cfg),
+                "oauth_binary": jarvis_llm::provider_oauth_binary(name),
                 "authed": jarvis_llm::provider_authed(name, &cfg),
                 "base_url": p.base_url,
             })

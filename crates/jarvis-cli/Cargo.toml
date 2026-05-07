@@ -23,6 +23,7 @@ jarvis-control.workspace = true
 jarvis-api.workspace = true
 jarvis-codex.workspace = true
 jarvis-llm.workspace = true
+jarvis-claude-cli.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
