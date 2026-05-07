@@ -45,6 +45,7 @@ http-body-util = "0.1"
 bytes = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 genai = "0.5"
+toml = "0.8"
 
 jarvis-core         = { path = "crates/jarvis-core" }
 jarvis-db           = { path = "crates/jarvis-db" }

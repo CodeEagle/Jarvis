@@ -19,6 +19,8 @@ pub enum CmdError {
     Db(#[from] jarvis_db::error::DbError),
     #[error("router: {0}")]
     Router(String),
+    #[error("config: {0}")]
+    Config(String),
 }
 
 pub fn cmd_route(db: &Db, input: &str) -> Result<String, CmdError> {
@@ -1080,6 +1082,99 @@ pub fn cmd_dashboard_summary_json(db: &Db) -> Result<String, CmdError> {
         "memories": memories,
         "pending_outbox": pending_outbox,
         "route_decisions": route_decisions,
+    });
+    Ok(payload.to_string())
+}
+
+// ── Model / provider configuration (PRD §5: LLM provider switching) ────
+
+/// Print the current default model id (or `(none)`).
+pub fn cmd_model_current() -> Result<String, CmdError> {
+    let cfg = jarvis_llm::load_default()
+        .map_err(|e| CmdError::Config(e.to_string()))?;
+    Ok(cfg
+        .default_model
+        .unwrap_or_else(|| "(none — set with `jarvis model set <provider/model>`)".into()))
+}
+
+/// Set the default model in the config file. The provider/model
+/// string must parse as `<provider>/<model>`.
+pub fn cmd_model_set(id: &str) -> Result<String, CmdError> {
+    if id.trim().is_empty() {
+        return Err(CmdError::MissingArg("model id"));
+    }
+    let parsed = jarvis_llm::ModelId::parse(id)
+        .map_err(|e| CmdError::Config(e.to_string()))?;
+    let mut cfg = jarvis_llm::load_default()
+        .map_err(|e| CmdError::Config(e.to_string()))?;
+    cfg.default_model = Some(parsed.display());
+    // Auto-record a provider entry so subsequent `model list` shows
+    // it; api_key_env is left to the well-known fallback.
+    cfg.providers
+        .entry(parsed.provider.clone())
+        .or_default();
+    jarvis_llm::save_default(&cfg).map_err(|e| CmdError::Config(e.to_string()))?;
+    Ok(format!(
+        "default model = {} · saved to {}",
+        parsed.display(),
+        jarvis_llm::config_path().display()
+    ))
+}
+
+/// Pretty list of providers (config + auth status) for human eyes.
+pub fn cmd_model_list() -> Result<Vec<String>, CmdError> {
+    let cfg = jarvis_llm::load_default()
+        .map_err(|e| CmdError::Config(e.to_string()))?;
+    let mut lines = Vec::new();
+    let default = cfg
+        .default_model
+        .as_deref()
+        .unwrap_or("(none)");
+    lines.push(format!("default = {default}"));
+    lines.push(format!(
+        "config  = {}",
+        jarvis_llm::config_path().display()
+    ));
+    if cfg.providers.is_empty() {
+        lines.push("providers: (none configured — `jarvis model set <id>` will record one)".into());
+    } else {
+        lines.push("providers:".into());
+        for (name, provider) in &cfg.providers {
+            let env = jarvis_llm::provider_env_var(name, &cfg)
+                .unwrap_or_else(|| "(none)".into());
+            let authed = jarvis_llm::provider_authed(name, &cfg);
+            let status = if authed { "ready" } else { "missing key" };
+            let base = provider
+                .base_url
+                .as_deref()
+                .map(|u| format!(" base_url={u}"))
+                .unwrap_or_default();
+            lines.push(format!("  {name}  env={env}  {status}{base}"));
+        }
+    }
+    Ok(lines)
+}
+
+/// JSON variant for `--json` consumers.
+pub fn cmd_model_list_json() -> Result<String, CmdError> {
+    let cfg = jarvis_llm::load_default()
+        .map_err(|e| CmdError::Config(e.to_string()))?;
+    let providers: Vec<serde_json::Value> = cfg
+        .providers
+        .iter()
+        .map(|(name, p)| {
+            serde_json::json!({
+                "name": name,
+                "api_key_env": jarvis_llm::provider_env_var(name, &cfg),
+                "authed": jarvis_llm::provider_authed(name, &cfg),
+                "base_url": p.base_url,
+            })
+        })
+        .collect();
+    let payload = serde_json::json!({
+        "default_model": cfg.default_model,
+        "config_path": jarvis_llm::config_path().to_string_lossy(),
+        "providers": providers,
     });
     Ok(payload.to_string())
 }

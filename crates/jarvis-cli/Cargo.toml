@@ -22,6 +22,7 @@ jarvis-orchestrator.workspace = true
 jarvis-control.workspace = true
 jarvis-api.workspace = true
 jarvis-codex.workspace = true
+jarvis-llm.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 chrono.workspace = true

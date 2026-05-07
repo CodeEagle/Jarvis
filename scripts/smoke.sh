@@ -222,9 +222,28 @@ else
     fail "pending list should be empty: '$PENDING_AFTER'"
 fi
 
+# ── 11b. Provider / model config (jarvis model) ─────────────────────
+hdr "11b. Provider / model config"
+# Use a per-run config file so we don't touch the operator's real
+# ~/.jarvis/config.toml.
+MODEL_CFG="/tmp/jarvis-smoke-model-$$.toml"
+rm -f "$MODEL_CFG"
+JARVIS_CONFIG="$MODEL_CFG" CURRENT_EMPTY=$(JARVIS_CONFIG="$MODEL_CFG" run model current)
+expect_contains "model current empty"  "(none"               "$CURRENT_EMPTY"
+SET_OUT=$(JARVIS_CONFIG="$MODEL_CFG" run model set anthropic/claude-sonnet-4-6)
+expect_contains "model set saves"      "default model = anthropic/claude-sonnet-4-6" "$SET_OUT"
+CURRENT_AFTER=$(JARVIS_CONFIG="$MODEL_CFG" run model current)
+expect_contains "model current after set" "anthropic/claude-sonnet-4-6" "$CURRENT_AFTER"
+LIST_JSON=$(JARVIS_CONFIG="$MODEL_CFG" run model list --json)
+expect_contains "model list --json default"   "\"default_model\":\"anthropic/claude-sonnet-4-6\"" "$LIST_JSON"
+expect_contains "model list --json provider"  "\"name\":\"anthropic\"" "$LIST_JSON"
+SET_BAD=$(JARVIS_CONFIG="$MODEL_CFG" run model set badformat 2>&1 || true)
+expect_contains "model set rejects bad id"    "expected" "$SET_BAD"
+rm -f "$MODEL_CFG"
+
 # ── 12. Subcommand --help / --json consistency ──────────────────────
 hdr "12. --help / --json consistency"
-for sub in route memory sessions persona handoff judge commands regression verifier; do
+for sub in route memory sessions persona handoff judge commands regression verifier model; do
     H=$(run "$sub" --help)
     if [[ "$H" == *"jarvis $sub"* ]]; then
         ok "jarvis $sub --help"

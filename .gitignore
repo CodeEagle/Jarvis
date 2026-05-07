@@ -6,3 +6,5 @@
 .DS_Store
 .idea/
 .vscode/
+# Convenience symlink to target/{debug,release}/jarvis used by smoke tests.
+/jarvis

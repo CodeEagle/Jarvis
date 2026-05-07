@@ -326,6 +326,28 @@ async fn main() -> anyhow::Result<()> {
                 Some(other) => anyhow::bail!("unknown regression subcommand: {other}"),
             }
         }
+        Some("model") => {
+            let sub = args.get(2).map(String::as_str);
+            match sub {
+                Some("list") | None => {
+                    if json_mode {
+                        println!("{}", jarvis_cli::cmd_model_list_json()?);
+                    } else {
+                        for line in jarvis_cli::cmd_model_list()? {
+                            println!("{line}");
+                        }
+                    }
+                }
+                Some("current") => {
+                    println!("{}", jarvis_cli::cmd_model_current()?);
+                }
+                Some("set") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    println!("{}", jarvis_cli::cmd_model_set(&id)?);
+                }
+                Some(other) => anyhow::bail!("unknown model subcommand: {other}"),
+            }
+        }
         Some("--help") | Some("-h") | Some("help") | None => print_usage(),
         Some(other) => {
             eprintln!("unknown subcommand: {other}\n");
@@ -1061,6 +1083,22 @@ jarvis judge probe
   Run a one-shot canned input through the selected JARVIS_JUDGE adapter
   to verify auth + binary + network. Use to triage silent fallbacks.
 ",
+        "model" => "\
+jarvis model <subcommand>
+
+  list [--json]                       Show configured providers + auth status.
+  current                             Print the default model id.
+  set <provider/model>                Set the default model (writes config file).
+
+  Config file: ~/.jarvis/config.toml (override with JARVIS_CONFIG).
+  Model id format: `<provider>/<model>` (e.g. anthropic/claude-sonnet-4-6).
+
+  Supported provider names track the genai crate: anthropic, openai,
+  gemini, groq, cohere, deepseek, xai, fireworks, together, ollama.
+
+  Auth: API keys come from env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY,
+  …); the config file only records which env var to use.
+",
         "maintenance" => "\
 jarvis maintenance [scope]
 
@@ -1146,6 +1184,9 @@ Commands (PRD §8.17 quick-actions):
 
 Provider:
   jarvis judge probe                   verify selected JARVIS_JUDGE adapter is live
+  jarvis model list [--json]           show configured providers and auth status
+  jarvis model current                 print the default model id
+  jarvis model set <provider/model>    set the default model (writes config file)
 
 Server / demo:
   jarvis serve [host:port]             start HTTP API (default 127.0.0.1:7777)
@@ -1160,8 +1201,9 @@ Env:
   JARVIS_LOG_JSON=1                    JSON-format log output
   JARVIS_REPLICATION_PEER              outbox replication endpoint
   JARVIS_REPLICATION_TOKEN             bearer token for replication
-  ANTHROPIC_API_KEY / OPENAI_API_KEY   for LLM judge adapters
+  ANTHROPIC_API_KEY / OPENAI_API_KEY   for LLM judge adapters and chat completions
   JARVIS_JUDGE=codex                   route through local codex CLI subprocess
   CODEX_BINARY / CODEX_MODEL / CODEX_TIMEOUT_SECS  override codex defaults
+  JARVIS_CONFIG                        path to TOML config (default: ~/.jarvis/config.toml)
 ");
 }
