@@ -710,6 +710,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "jarvis-core",
+ "jarvis-db",
  "jarvis-router",
  "serde",
  "serde_json",
