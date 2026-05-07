@@ -432,6 +432,194 @@ pub fn cmd_sessions_archive(db: &Db, id: &str) -> Result<String, CmdError> {
     Ok(format!("archived {id}"))
 }
 
+// ── v1.9 capacity advisor + handoff (PRD docs/prd/v1.9-context-handoff.md) ──
+
+/// Compute the current ContextHealth and return its advisory level
+/// + raw scores. Reads as much as it can from the DB; remaining
+/// signals (waiting_user / steer_just_injected / seconds since last
+/// advisory) are best-effort approximations based on current state.
+pub fn cmd_sessions_capacity(
+    db: &Db,
+    session_id: &str,
+) -> Result<String, CmdError> {
+    if session_id.trim().is_empty() {
+        return Err(CmdError::MissingArg("session id"));
+    }
+    let sess = jarvis_db::session_repo::get_session(db, session_id)?
+        .ok_or_else(|| CmdError::Router(format!("session not found: {session_id}")))?;
+
+    // Approximations until ContextSnapshot rows are wired into a
+    // running session pipeline:
+    //   pressure_ratio       ≈ rolling_summary length vs 8000 token budget
+    //   benefit_score        ≈ const 0.6 (placeholder neutral)
+    //   force_compress_hits  ≈ 0
+    //   waiting_user         ← ConversationBus ownership.interaction_mode
+    //   steer_just_injected  ← any pending Steer for this session
+    let rolling_tokens = (sess.long_summary.len() / 4) as u32; // rough chars/4
+    let budget_tokens: u32 = 8000;
+    let pressure = (rolling_tokens as f32 / budget_tokens as f32).min(1.0);
+
+    let bus = jarvis_orchestrator::conversation_bus::ConversationBus::new(db.clone());
+    let waiting_user = bus
+        .current_ownership(session_id)?
+        .map(|o| {
+            o.interaction_mode
+                == jarvis_orchestrator::conversation_bus::InteractionMode::WaitingUser
+        })
+        .unwrap_or(false);
+
+    let health = jarvis_control::ContextHealth {
+        session_id: session_id.into(),
+        trace_id: String::new(),
+        injected_tokens: rolling_tokens,
+        budget_tokens,
+        pressure_ratio: pressure,
+        benefit_score: 0.6,
+        benefit_trend: vec![],
+        rolling_summary_tokens: rolling_tokens,
+        force_compress_hits: 0,
+        waiting_user,
+        seconds_since_last_advisory: u64::MAX,
+        steer_just_injected: false,
+    };
+    let level = jarvis_control::evaluate_capacity(
+        &health,
+        jarvis_control::AdvisorPolicy::defaults(),
+    );
+    Ok(format!(
+        "session={}  advisory={}  pressure={:.2}  benefit={:.2}  rolling_tokens={}  waiting_user={}",
+        session_id,
+        level.as_str(),
+        pressure,
+        health.benefit_score,
+        rolling_tokens,
+        waiting_user,
+    ))
+}
+
+/// Generate a handoff snapshot for the session. Reads its current
+/// active ActivityCards + Tier 1 memory ids + pinned artifacts and
+/// hands them to the deterministic planner.
+pub fn cmd_sessions_handoff(
+    db: &Db,
+    session_id: &str,
+) -> Result<String, CmdError> {
+    if session_id.trim().is_empty() {
+        return Err(CmdError::MissingArg("session id"));
+    }
+    let sess = jarvis_db::session_repo::get_session(db, session_id)?
+        .ok_or_else(|| CmdError::Router(format!("session not found: {session_id}")))?;
+
+    // ActivityCard summaries
+    let cards =
+        jarvis_orchestrator::activity_card::ActivityCardStore::new(db.clone())
+            .list_for_session(session_id)?;
+    let recent_activity: Vec<jarvis_orchestrator::handoff::ActivitySummary> = cards
+        .into_iter()
+        .map(|c| jarvis_orchestrator::handoff::ActivitySummary {
+            title: c.title,
+            status: c.status.as_str().to_string(),
+        })
+        .collect();
+
+    // Tier 1 memories — high-value pins.
+    let pinned_memory_ids: Vec<String> = jarvis_db::memory_repo::list_by_scope(db, "global", 200)?
+        .into_iter()
+        .filter(|m| m.tier == 1)
+        .map(|m| m.id)
+        .collect();
+
+    // Pinned artifacts: most recent for this session.
+    let pinned_artifact_ids: Vec<String> = jarvis_orchestrator::artifact_registry::ArtifactRegistry::new(
+        db.clone(),
+    )
+    .build_index(session_id)?
+    .into_iter()
+    .map(|a| a.id)
+    .take(10)
+    .collect();
+
+    let inputs = jarvis_orchestrator::handoff::PlanInputs {
+        session: &sess,
+        trace_id: None,
+        advisory_level: "manual",
+        benefit_score: 0.0,
+        pressure_ratio: (sess.long_summary.len() / 4) as f32 / 8000.0,
+        recent_activity,
+        pinned_memory_ids,
+        pinned_artifact_ids,
+        rolling_summary_excerpt: sess.long_summary.clone(),
+        must_know_constraints: sess.unresolved.clone(),
+    };
+    let snap = jarvis_orchestrator::handoff::plan(&inputs);
+    jarvis_orchestrator::handoff::persist_snapshot(db, &snap)
+        .map_err(|e| CmdError::Router(format!("persist handoff: {e}")))?;
+    Ok(format!(
+        "{}  source={}  open_threads={}  completed={}  suggested_first='{}'",
+        snap.id,
+        snap.source_session_id,
+        snap.sections.open_threads.len(),
+        snap.sections.completed_so_far.len(),
+        render::truncate(&snap.sections.suggested_first_message, 50),
+    ))
+}
+
+pub fn cmd_handoff_list(db: &Db, limit: usize) -> Result<Vec<String>, CmdError> {
+    let snaps = jarvis_orchestrator::handoff::list_pending(db, limit)
+        .map_err(|e| CmdError::Router(format!("list pending handoffs: {e}")))?;
+    Ok(snaps
+        .into_iter()
+        .map(|s| {
+            format!(
+                "{}  source={}  decision={}  advisory={}  generated_at={}  '{}'",
+                s.id,
+                s.source_session_id,
+                s.user_decision.as_str(),
+                s.advisory_level,
+                s.generated_at.to_rfc3339(),
+                render::truncate(&s.sections.suggested_first_message, 40),
+            )
+        })
+        .collect())
+}
+
+pub fn cmd_handoff_show(db: &Db, id: &str) -> Result<String, CmdError> {
+    if id.trim().is_empty() {
+        return Err(CmdError::MissingArg("handoff id"));
+    }
+    let snap = jarvis_orchestrator::handoff::load(db, id)
+        .map_err(|e| CmdError::Router(format!("load handoff: {e}")))?
+        .ok_or_else(|| CmdError::Router(format!("handoff not found: {id}")))?;
+    serde_json::to_string_pretty(&snap)
+        .map_err(|e| CmdError::Router(format!("encode: {e}")))
+}
+
+pub fn cmd_handoff_accept(
+    db: &Db,
+    id: &str,
+    new_title: Option<&str>,
+) -> Result<String, CmdError> {
+    if id.trim().is_empty() {
+        return Err(CmdError::MissingArg("handoff id"));
+    }
+    let new_id = jarvis_orchestrator::handoff::accept(
+        db,
+        id,
+        new_title.map(str::to_string),
+    )
+    .map_err(|e| CmdError::Router(format!("accept handoff: {e}")))?;
+    Ok(format!("accepted {id}  new_session={new_id}"))
+}
+
+pub fn cmd_handoff_decline(db: &Db, id: &str) -> Result<String, CmdError> {
+    if id.trim().is_empty() {
+        return Err(CmdError::MissingArg("handoff id"));
+    }
+    jarvis_orchestrator::handoff::decline(db, id)
+        .map_err(|e| CmdError::Router(format!("decline handoff: {e}")))?;
+    Ok(format!("declined {id}"))
+}
+
 pub fn cmd_persona_get(db: &Db, scope: &str) -> Result<String, CmdError> {
     match jarvis_db::persona_repo::get(db, scope)? {
         Some(p) => Ok(format!(

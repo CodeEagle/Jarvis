@@ -13,6 +13,7 @@ pub mod conversation_bus;
 pub mod dispatch;
 pub mod interrupt;
 pub mod pipeline;
+pub mod handoff;
 pub mod regression;
 pub mod steer;
 pub mod steer_adapter;

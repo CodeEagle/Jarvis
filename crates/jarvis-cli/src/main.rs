@@ -133,6 +133,14 @@ async fn main() -> anyhow::Result<()> {
                     let id = args.get(3).cloned().unwrap_or_default();
                     println!("{}", jarvis_cli::cmd_sessions_archive(&db, &id)?);
                 }
+                Some("capacity") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    println!("{}", jarvis_cli::cmd_sessions_capacity(&db, &id)?);
+                }
+                Some("handoff") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    println!("{}", jarvis_cli::cmd_sessions_handoff(&db, &id)?);
+                }
                 Some(other) => anyhow::bail!("unknown sessions subcommand: {other}"),
             }
         }
@@ -225,6 +233,34 @@ async fn main() -> anyhow::Result<()> {
                     println!("{}", jarvis_cli::cmd_verifier_status(&db, &id)?);
                 }
                 _ => println!("Usage: verifier list <doc_id> | verifier status <doc_id>"),
+            }
+        }
+        Some("handoff") => {
+            let sub = args.get(2).map(String::as_str);
+            match sub {
+                Some("list") | None => {
+                    let limit = args
+                        .get(3)
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(20usize);
+                    for line in jarvis_cli::cmd_handoff_list(&db, limit)? {
+                        println!("{line}");
+                    }
+                }
+                Some("show") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    println!("{}", jarvis_cli::cmd_handoff_show(&db, &id)?);
+                }
+                Some("accept") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    let title = args.get(4).map(String::as_str);
+                    println!("{}", jarvis_cli::cmd_handoff_accept(&db, &id, title)?);
+                }
+                Some("decline") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    println!("{}", jarvis_cli::cmd_handoff_decline(&db, &id)?);
+                }
+                Some(other) => anyhow::bail!("unknown handoff subcommand: {other}"),
             }
         }
         Some("commands") => {
@@ -908,8 +944,19 @@ jarvis sessions <subcommand>
   new <title> [domain]         Create a new active session (default domain=general).
   archive <id>                 Move session to status=archived (idempotent).
   messages <sess>              Recent messages for a session.
+  capacity <sess>              v1.9: ContextHealth + advisory level.
+  handoff <sess>               v1.9: generate a HandoffSnapshot for the session.
 
   --json on `list` prints a JSON array with id/title/domain/last_active.
+",
+        "handoff" => "\
+jarvis handoff <subcommand>            (PRD v1.9)
+
+  list [limit]                 List pending / deferred handoff snapshots.
+  show <id>                    Pretty-print one snapshot as JSON.
+  accept <id> [new_title]      Accept: archive source session, create
+                               new session inheriting cold-start payload.
+  decline <id>                 Decline; snapshot frozen as declined.
 ",
         "activity-cards" => "\
 jarvis activity-cards <session_id>
@@ -1053,7 +1100,15 @@ Sessions:
   jarvis sessions new <title> [domain] create a new active session
   jarvis sessions archive <id>         archive a session (idempotent)
   jarvis sessions messages <sess>      recent messages for a session
+  jarvis sessions capacity <sess>      v1.9 ContextHealth advisory
+  jarvis sessions handoff <sess>       v1.9 generate HandoffSnapshot
   jarvis activity-cards <sess>         list activity cards for a session
+
+Handoff (v1.9):
+  jarvis handoff list [limit]          pending handoff snapshots
+  jarvis handoff show <id>             pretty-print snapshot JSON
+  jarvis handoff accept <id> [title]   archive source + start new session
+  jarvis handoff decline <id>          decline snapshot
 
 Persona:
   jarvis persona get [--scope global]  print persona JSON

@@ -681,6 +681,38 @@ CREATE TABLE IF NOT EXISTS personas (
     content_json TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
+
+-- ─── handoff snapshots (PRD v1.9 §1.8) ─────────────────────────────────
+-- Generated when CapacityAdvisor decides the current session has spent
+-- its useful budget. The user accepts → a new session inherits the
+-- cold_start_payload; declines → the snapshot stays archived.
+-- Immutable once a decision lands (pending / deferred can still flip).
+
+CREATE TABLE IF NOT EXISTS handoff_snapshots (
+    id                       TEXT PRIMARY KEY,
+    source_session_id        TEXT NOT NULL,
+    target_session_id        TEXT,                    -- filled on accept
+    trace_id                 TEXT,
+    sections_json            TEXT NOT NULL,           -- HandoffSections
+    cold_start_payload_json  TEXT NOT NULL,           -- HandoffColdStart
+    user_decision            TEXT NOT NULL DEFAULT 'pending',
+                                                      -- pending / accepted / declined / deferred
+    advisory_level           TEXT NOT NULL,
+    benefit_score            REAL NOT NULL,
+    pressure_ratio           REAL NOT NULL,
+    generated_at             TEXT NOT NULL,
+    decided_at               TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_handoff_source
+    ON handoff_snapshots (source_session_id, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_handoff_pending
+    ON handoff_snapshots (user_decision, generated_at DESC);
+
+CREATE TRIGGER IF NOT EXISTS prevent_handoff_finalised_update
+    BEFORE UPDATE ON handoff_snapshots
+    WHEN OLD.user_decision IN ('accepted', 'declined')
+    BEGIN SELECT RAISE(ABORT, 'handoff_snapshots is immutable once decided'); END;
 "#;
 
 pub fn run(conn: &Connection) -> DbResult<()> {

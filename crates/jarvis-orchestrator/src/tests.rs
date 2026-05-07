@@ -1494,6 +1494,227 @@ EOF
     );
 }
 
+// ── v1.9 handoff (docs/prd/v1.9-context-handoff.md) ─────────────────────
+
+#[cfg(test)]
+fn seed_session_for_handoff(db: &Db, id: &str, title: &str) {
+    let n = chrono::Utc::now();
+    let sess = jarvis_core::session::Session {
+        id: id.into(),
+        title: title.into(),
+        domain: "coding".into(),
+        topic: "demo".into(),
+        summary: "demo summary".into(),
+        long_summary: "Mirage 重构进行中：sync_state.dart 已建好，sync_executor 还在重构".into(),
+        active_entities: vec![],
+        unresolved: vec!["sync_executor.dart 重构".into()],
+        resolved: vec!["sync_state.dart 抽离".into()],
+        recent_message_ids: vec![],
+        memory_refs: vec![],
+        skill_refs: vec![],
+        status: jarvis_core::session::SessionStatus::Active,
+        created_at: n,
+        updated_at: n,
+        last_active_at: n,
+    };
+    jarvis_db::session_repo::upsert_session(db, &sess).unwrap();
+}
+
+#[test]
+fn handoff_plan_uses_session_resolved_and_unresolved() {
+    let db = Db::in_memory().unwrap();
+    seed_session_for_handoff(&db, "sess_h", "Mirage 重构");
+    let sess = jarvis_db::session_repo::get_session(&db, "sess_h")
+        .unwrap()
+        .unwrap();
+    let inputs = handoff::PlanInputs {
+        session: &sess,
+        trace_id: Some("trc_h"),
+        advisory_level: "handoff_recommended",
+        benefit_score: 0.25,
+        pressure_ratio: 0.92,
+        recent_activity: vec![],
+        pinned_memory_ids: vec!["mem_pref".into()],
+        pinned_artifact_ids: vec!["art_diff".into()],
+        rolling_summary_excerpt: "Mirage 重构".into(),
+        must_know_constraints: vec!["保持 stream 接口不变".into()],
+    };
+    let snap = handoff::plan(&inputs);
+    assert!(snap.sections.completed_so_far.contains(&"sync_state.dart 抽离".to_string()));
+    assert!(snap
+        .sections
+        .open_threads
+        .contains(&"sync_executor.dart 重构".to_string()));
+    assert!(snap.sections.suggested_first_message.contains("继续"));
+    assert_eq!(snap.user_decision, handoff::HandoffDecision::Pending);
+    assert_eq!(snap.advisory_level, "handoff_recommended");
+}
+
+#[test]
+fn handoff_persist_and_load_round_trip() {
+    let db = Db::in_memory().unwrap();
+    seed_session_for_handoff(&db, "sess_h2", "task two");
+    let sess = jarvis_db::session_repo::get_session(&db, "sess_h2")
+        .unwrap()
+        .unwrap();
+    let snap = handoff::plan(&handoff::PlanInputs {
+        session: &sess,
+        trace_id: None,
+        advisory_level: "manual",
+        benefit_score: 0.5,
+        pressure_ratio: 0.5,
+        recent_activity: vec![],
+        pinned_memory_ids: vec![],
+        pinned_artifact_ids: vec![],
+        rolling_summary_excerpt: "x".into(),
+        must_know_constraints: vec![],
+    });
+    handoff::persist_snapshot(&db, &snap).unwrap();
+    let loaded = handoff::load(&db, &snap.id).unwrap().unwrap();
+    assert_eq!(loaded.id, snap.id);
+    assert_eq!(loaded.source_session_id, "sess_h2");
+    assert_eq!(loaded.user_decision, handoff::HandoffDecision::Pending);
+}
+
+#[test]
+fn handoff_accept_creates_new_session_and_archives_source() {
+    let db = Db::in_memory().unwrap();
+    seed_session_for_handoff(&db, "sess_old", "old session");
+    let sess = jarvis_db::session_repo::get_session(&db, "sess_old")
+        .unwrap()
+        .unwrap();
+    let snap = handoff::plan(&handoff::PlanInputs {
+        session: &sess,
+        trace_id: None,
+        advisory_level: "handoff_required",
+        benefit_score: 0.2,
+        pressure_ratio: 0.95,
+        recent_activity: vec![],
+        pinned_memory_ids: vec!["mem_p".into()],
+        pinned_artifact_ids: vec![],
+        rolling_summary_excerpt: "重构进行中".into(),
+        must_know_constraints: vec!["保持接口".into()],
+    });
+    handoff::persist_snapshot(&db, &snap).unwrap();
+    let new_id = handoff::accept(&db, &snap.id, None).unwrap();
+
+    // Source archived.
+    let src = jarvis_db::session_repo::get_session(&db, "sess_old")
+        .unwrap()
+        .unwrap();
+    assert_eq!(src.status, jarvis_core::session::SessionStatus::Archived);
+
+    // Target exists, inherits unresolved (session_repo persists those).
+    let tgt = jarvis_db::session_repo::get_session(&db, &new_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(tgt.status, jarvis_core::session::SessionStatus::Active);
+    assert!(tgt
+        .unresolved
+        .contains(&"sync_executor.dart 重构".to_string()));
+    // memory_refs / skill_refs / recent_message_ids aren't persisted by
+    // the current session_repo; the cold_start_payload on the
+    // HandoffSnapshot is the canonical source consumers should read.
+
+    // Snapshot frozen and carries the pinned memory id.
+    let after = handoff::load(&db, &snap.id).unwrap().unwrap();
+    assert_eq!(after.user_decision, handoff::HandoffDecision::Accepted);
+    assert_eq!(after.target_session_id.as_deref(), Some(new_id.as_str()));
+    assert!(after.cold_start.pinned_memory_ids.contains(&"mem_p".to_string()));
+}
+
+#[test]
+fn handoff_decline_freezes_without_target() {
+    let db = Db::in_memory().unwrap();
+    seed_session_for_handoff(&db, "sess_d", "x");
+    let sess = jarvis_db::session_repo::get_session(&db, "sess_d")
+        .unwrap()
+        .unwrap();
+    let snap = handoff::plan(&handoff::PlanInputs {
+        session: &sess,
+        trace_id: None,
+        advisory_level: "warn",
+        benefit_score: 0.5,
+        pressure_ratio: 0.5,
+        recent_activity: vec![],
+        pinned_memory_ids: vec![],
+        pinned_artifact_ids: vec![],
+        rolling_summary_excerpt: "".into(),
+        must_know_constraints: vec![],
+    });
+    handoff::persist_snapshot(&db, &snap).unwrap();
+    handoff::decline(&db, &snap.id).unwrap();
+    let after = handoff::load(&db, &snap.id).unwrap().unwrap();
+    assert_eq!(after.user_decision, handoff::HandoffDecision::Declined);
+    assert!(after.target_session_id.is_none());
+    // Source not archived (decline doesn't touch session).
+    let src = jarvis_db::session_repo::get_session(&db, "sess_d")
+        .unwrap()
+        .unwrap();
+    assert_eq!(src.status, jarvis_core::session::SessionStatus::Active);
+}
+
+#[test]
+fn handoff_double_accept_blocked_by_trigger() {
+    let db = Db::in_memory().unwrap();
+    seed_session_for_handoff(&db, "sess_dup", "x");
+    let sess = jarvis_db::session_repo::get_session(&db, "sess_dup")
+        .unwrap()
+        .unwrap();
+    let snap = handoff::plan(&handoff::PlanInputs {
+        session: &sess,
+        trace_id: None,
+        advisory_level: "manual",
+        benefit_score: 0.5,
+        pressure_ratio: 0.5,
+        recent_activity: vec![],
+        pinned_memory_ids: vec![],
+        pinned_artifact_ids: vec![],
+        rolling_summary_excerpt: "".into(),
+        must_know_constraints: vec![],
+    });
+    handoff::persist_snapshot(&db, &snap).unwrap();
+    handoff::accept(&db, &snap.id, None).unwrap();
+    let err = handoff::accept(&db, &snap.id, None).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.to_lowercase().contains("already") || msg.to_lowercase().contains("immutable"),
+        "expected already/immutable error, got: {msg}"
+    );
+}
+
+#[test]
+fn handoff_list_pending_and_for_session() {
+    let db = Db::in_memory().unwrap();
+    seed_session_for_handoff(&db, "sess_l", "x");
+    let sess = jarvis_db::session_repo::get_session(&db, "sess_l")
+        .unwrap()
+        .unwrap();
+    for _ in 0..3 {
+        let s = handoff::plan(&handoff::PlanInputs {
+            session: &sess,
+            trace_id: None,
+            advisory_level: "manual",
+            benefit_score: 0.5,
+            pressure_ratio: 0.5,
+            recent_activity: vec![],
+            pinned_memory_ids: vec![],
+            pinned_artifact_ids: vec![],
+            rolling_summary_excerpt: "".into(),
+            must_know_constraints: vec![],
+        });
+        handoff::persist_snapshot(&db, &s).unwrap();
+    }
+    let pending = handoff::list_pending(&db, 10).unwrap();
+    assert_eq!(pending.len(), 3);
+    let by_session = handoff::list_for_session(&db, "sess_l", 10).unwrap();
+    assert_eq!(by_session.len(), 3);
+    // Decline one → pending count drops.
+    handoff::decline(&db, &pending[0].id).unwrap();
+    let after = handoff::list_pending(&db, 10).unwrap();
+    assert_eq!(after.len(), 2);
+}
+
 // ── synthesizer arbitration (PRD §27.6) ─────────────────────────────────
 
 fn synth_candidate(agent_type: &str, status: sub_task::SubTaskStatus, tokens: u32, artifacts: usize) -> synthesizer::Candidate {

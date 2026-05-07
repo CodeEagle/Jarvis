@@ -466,6 +466,79 @@ fn cmd_memory_write_rejects_empty_content() {
         .expect("expected MissingArg");
 }
 
+// ── v1.9 handoff CLI ────────────────────────────────────────────────────
+
+#[test]
+fn cmd_sessions_capacity_returns_advisory_for_known_session() {
+    let db = fresh_db();
+    seed_session(&db, "sess_cap");
+    let line = cmd_sessions_capacity(&db, "sess_cap").unwrap();
+    assert!(line.contains("session=sess_cap"));
+    assert!(line.contains("advisory="));
+    assert!(line.contains("pressure="));
+    assert!(line.contains("waiting_user=false"));
+}
+
+#[test]
+fn cmd_sessions_capacity_unknown_errors() {
+    let db = fresh_db();
+    let err = cmd_sessions_capacity(&db, "nope").unwrap_err();
+    assert!(err.to_string().contains("not found"));
+}
+
+#[test]
+fn cmd_sessions_handoff_persists_snapshot() {
+    let db = fresh_db();
+    seed_session(&db, "sess_h");
+    let line = cmd_sessions_handoff(&db, "sess_h").unwrap();
+    assert!(line.starts_with("hand_"));
+    assert!(line.contains("source=sess_h"));
+    // Pending list now has it.
+    let pending = cmd_handoff_list(&db, 10).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].contains("decision=pending"));
+}
+
+#[test]
+fn cmd_handoff_accept_round_trip() {
+    let db = fresh_db();
+    seed_session(&db, "sess_a");
+    let summary = cmd_sessions_handoff(&db, "sess_a").unwrap();
+    let id = summary.split_whitespace().next().unwrap().to_string();
+    let out = cmd_handoff_accept(&db, &id, Some("继续会话")).unwrap();
+    assert!(out.contains("accepted"));
+    assert!(out.contains("new_session=sess_"));
+    // Pending list emptied.
+    let pending = cmd_handoff_list(&db, 10).unwrap();
+    assert!(pending.is_empty());
+}
+
+#[test]
+fn cmd_handoff_decline_round_trip() {
+    let db = fresh_db();
+    seed_session(&db, "sess_d");
+    let summary = cmd_sessions_handoff(&db, "sess_d").unwrap();
+    let id = summary.split_whitespace().next().unwrap().to_string();
+    let out = cmd_handoff_decline(&db, &id).unwrap();
+    assert!(out.contains("declined"));
+    let pending = cmd_handoff_list(&db, 10).unwrap();
+    assert!(pending.is_empty());
+}
+
+#[test]
+fn cmd_handoff_show_returns_pretty_json() {
+    let db = fresh_db();
+    seed_session(&db, "sess_s");
+    let summary = cmd_sessions_handoff(&db, "sess_s").unwrap();
+    let id = summary.split_whitespace().next().unwrap().to_string();
+    let json = cmd_handoff_show(&db, &id).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["id"], id);
+    assert_eq!(v["source_session_id"], "sess_s");
+    assert_eq!(v["user_decision"], "pending");
+    assert!(v["sections"]["suggested_first_message"].as_str().is_some());
+}
+
 #[test]
 fn cmd_memory_list_json_emits_valid_array() {
     let db = fresh_db();

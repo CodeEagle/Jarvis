@@ -11,6 +11,7 @@
 //! "task plane" here is a `tokio::task` that runs the Router. That's
 //! enough to exercise the SLA and watchdog primitives end-to-end.
 
+pub mod capacity_advisor;
 pub mod control_plane;
 pub mod fallback;
 pub mod replication;
@@ -19,6 +20,7 @@ pub mod sla;
 pub mod tracing_init;
 pub mod watchdog;
 
+pub use capacity_advisor::{evaluate as evaluate_capacity, AdvisorPolicy, AdvisoryLevel, ContextHealth};
 pub use control_plane::*;
 pub use fallback::*;
 pub use replication::{ReplicationConfig, ReplicationEnvelope, Replicator};

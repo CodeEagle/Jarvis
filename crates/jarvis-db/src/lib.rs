@@ -19,6 +19,7 @@ pub mod memory_change_log;
 pub mod memory_repo;
 pub mod mention_log;
 pub mod migrations;
+pub mod handoff_repo;
 pub mod outbox;
 pub mod persona_repo;
 pub mod provenance;

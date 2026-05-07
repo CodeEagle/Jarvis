@@ -201,6 +201,214 @@ async fn audit_returns_array() {
     assert_eq!(json.as_array().unwrap().len(), 1);
 }
 
+// ── v1.9 handoff API ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn handoff_capacity_returns_advisory() {
+    let state = fresh_state();
+    let n = chrono::Utc::now();
+    jarvis_db::session_repo::upsert_session(
+        &state.db,
+        &jarvis_core::session::Session {
+            id: "sess_v19".into(),
+            title: "v1.9 capacity".into(),
+            domain: "coding".into(),
+            topic: "x".into(),
+            summary: "".into(),
+            long_summary: "".into(),
+            active_entities: vec![],
+            unresolved: vec![],
+            resolved: vec![],
+            recent_message_ids: vec![],
+            memory_refs: vec![],
+            skill_refs: vec![],
+            status: jarvis_core::session::SessionStatus::Active,
+            created_at: n,
+            updated_at: n,
+            last_active_at: n,
+        },
+    )
+    .unwrap();
+    let resp = handlers::capacity_for_session(&state.db, "sess_v19").unwrap();
+    let body = body_bytes(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["session_id"], "sess_v19");
+    assert_eq!(json["advisory_level"], "ok");
+    assert_eq!(json["waiting_user"], false);
+}
+
+#[tokio::test]
+async fn handoff_plan_post_persists_and_appears_in_pending() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let arc_state = fresh_state();
+    let n = chrono::Utc::now();
+    jarvis_db::session_repo::upsert_session(
+        &arc_state.db,
+        &jarvis_core::session::Session {
+            id: "sess_plan".into(),
+            title: "plan target".into(),
+            domain: "coding".into(),
+            topic: "x".into(),
+            summary: "".into(),
+            long_summary: "重构 sync 模块".into(),
+            active_entities: vec![],
+            unresolved: vec!["sync_executor 重构".into()],
+            resolved: vec!["sync_state 抽离".into()],
+            recent_message_ids: vec![],
+            memory_refs: vec![],
+            skill_refs: vec![],
+            status: jarvis_core::session::SessionStatus::Active,
+            created_at: n,
+            updated_at: n,
+            last_active_at: n,
+        },
+    )
+    .unwrap();
+    let server_state = arc_state.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let svc_state = server_state.clone();
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |req| {
+                    handle(svc_state.clone(), req, peer)
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    let body = r#"{"advisory_level":"manual"}"#;
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "POST /sessions/sess_plan/handoff/plan HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        client.read_to_end(&mut buf),
+    )
+    .await;
+    let response = String::from_utf8_lossy(&buf);
+    assert!(response.contains("200 OK"), "response: {response}");
+    assert!(response.contains("\"source_session_id\":\"sess_plan\""));
+    assert!(response.contains("\"user_decision\":\"pending\""));
+
+    // Now /handoff/pending lists it.
+    let resp = handlers::handoff_list_pending(&arc_state.db).unwrap();
+    let body2 = body_bytes(resp).await;
+    let arr: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+    assert_eq!(arr.as_array().unwrap().len(), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn handoff_accept_via_http_swaps_session() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let arc_state = fresh_state();
+    let n = chrono::Utc::now();
+    jarvis_db::session_repo::upsert_session(
+        &arc_state.db,
+        &jarvis_core::session::Session {
+            id: "sess_swap".into(),
+            title: "swap source".into(),
+            domain: "coding".into(),
+            topic: "x".into(),
+            summary: "".into(),
+            long_summary: "x".into(),
+            active_entities: vec![],
+            unresolved: vec!["pending thread".into()],
+            resolved: vec![],
+            recent_message_ids: vec![],
+            memory_refs: vec![],
+            skill_refs: vec![],
+            status: jarvis_core::session::SessionStatus::Active,
+            created_at: n,
+            updated_at: n,
+            last_active_at: n,
+        },
+    )
+    .unwrap();
+
+    // Plan via library directly to keep the test simple.
+    let sess = jarvis_db::session_repo::get_session(&arc_state.db, "sess_swap")
+        .unwrap()
+        .unwrap();
+    let snap = jarvis_orchestrator::handoff::plan(
+        &jarvis_orchestrator::handoff::PlanInputs {
+            session: &sess,
+            trace_id: None,
+            advisory_level: "manual",
+            benefit_score: 0.5,
+            pressure_ratio: 0.5,
+            recent_activity: vec![],
+            pinned_memory_ids: vec![],
+            pinned_artifact_ids: vec![],
+            rolling_summary_excerpt: "".into(),
+            must_know_constraints: vec![],
+        },
+    );
+    jarvis_orchestrator::handoff::persist_snapshot(&arc_state.db, &snap).unwrap();
+    let snap_id = snap.id.clone();
+
+    let server_state = arc_state.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let svc_state = server_state.clone();
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |req| {
+                    handle(svc_state.clone(), req, peer)
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    let body = r#"{"new_title":"continued"}"#;
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "POST /handoff/{snap_id}/accept HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        client.read_to_end(&mut buf),
+    )
+    .await;
+    let response = String::from_utf8_lossy(&buf);
+    assert!(response.contains("200 OK"), "{response}");
+    assert!(response.contains("\"target_session_id\""));
+    // Source archived.
+    let after = jarvis_db::session_repo::get_session(&arc_state.db, "sess_swap")
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.status, jarvis_core::session::SessionStatus::Archived);
+    server.abort();
+}
+
 // ── Conversation API (PRD §23.3) ────────────────────────────────────────
 
 #[tokio::test]

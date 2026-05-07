@@ -101,6 +101,50 @@ async fn handle(
         (Method::POST, "/steer") => post_steer(&state, req).await,
         (Method::POST, "/interrupt") => post_interrupt(&state, req).await,
         (Method::POST, "/maintenance/lint") => post_maintenance_lint(&state, req).await,
+        // ── v1.9 Handoff API ────────────────────────────────────────
+        (Method::GET, "/handoff/pending") => handlers::handoff_list_pending(&state.db),
+        (Method::GET, p)
+            if p.starts_with("/sessions/") && p.ends_with("/capacity") =>
+        {
+            let id = p
+                .strip_prefix("/sessions/")
+                .and_then(|s| s.strip_suffix("/capacity"))
+                .unwrap_or("");
+            handlers::capacity_for_session(&state.db, id)
+        }
+        (Method::POST, p)
+            if p.starts_with("/sessions/") && p.ends_with("/handoff/plan") =>
+        {
+            let id = p
+                .strip_prefix("/sessions/")
+                .and_then(|s| s.strip_suffix("/handoff/plan"))
+                .unwrap_or("")
+                .to_string();
+            post_session_handoff_plan(&state, req, id).await
+        }
+        (Method::POST, p)
+            if p.starts_with("/handoff/") && p.ends_with("/accept") =>
+        {
+            let id = p
+                .strip_prefix("/handoff/")
+                .and_then(|s| s.strip_suffix("/accept"))
+                .unwrap_or("")
+                .to_string();
+            post_handoff_accept(&state, req, id).await
+        }
+        (Method::POST, p)
+            if p.starts_with("/handoff/") && p.ends_with("/decline") =>
+        {
+            let id = p
+                .strip_prefix("/handoff/")
+                .and_then(|s| s.strip_suffix("/decline"))
+                .unwrap_or("")
+                .to_string();
+            post_handoff_decline(&state, req, id).await
+        }
+        (Method::GET, p) if p.starts_with("/handoff/") => {
+            handlers::handoff_get(&state.db, &p["/handoff/".len()..])
+        }
         // ── Conversation API (PRD §23.3) ────────────────────────────
         (Method::GET, p)
             if p.starts_with("/conversation/") && p.ends_with("/ownership") =>
@@ -592,6 +636,112 @@ async fn post_conversation_steer(
         }
     };
     Ok(json_ok(&payload))
+}
+
+// ── v1.9 handoff endpoints ────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct HandoffPlanBody {
+    #[serde(default)]
+    advisory_level: Option<String>,
+}
+
+async fn post_session_handoff_plan(
+    state: &Arc<ApiState>,
+    req: Request<Incoming>,
+    session_id: String,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    // Body is optional; if absent we default to "manual".
+    let body = read_json::<HandoffPlanBody>(req)
+        .await
+        .unwrap_or(HandoffPlanBody {
+            advisory_level: None,
+        });
+    let advisory = body.advisory_level.unwrap_or_else(|| "manual".into());
+
+    let sess = jarvis_db::session_repo::get_session(&state.db, &session_id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(session_id.clone()))?;
+
+    let cards =
+        jarvis_orchestrator::activity_card::ActivityCardStore::new(state.db.clone())
+            .list_for_session(&session_id)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let recent_activity: Vec<jarvis_orchestrator::handoff::ActivitySummary> = cards
+        .into_iter()
+        .map(|c| jarvis_orchestrator::handoff::ActivitySummary {
+            title: c.title,
+            status: c.status.as_str().to_string(),
+        })
+        .collect();
+    let pinned_memory_ids: Vec<String> =
+        jarvis_db::memory_repo::list_by_scope(&state.db, "global", 200)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .into_iter()
+            .filter(|m| m.tier == 1)
+            .map(|m| m.id)
+            .collect();
+    let pinned_artifact_ids: Vec<String> =
+        jarvis_orchestrator::artifact_registry::ArtifactRegistry::new(state.db.clone())
+            .build_index(&session_id)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .into_iter()
+            .map(|a| a.id)
+            .take(10)
+            .collect();
+    let pressure = (sess.long_summary.len() / 4) as f32 / 8000.0;
+    let inputs = jarvis_orchestrator::handoff::PlanInputs {
+        session: &sess,
+        trace_id: None,
+        advisory_level: &advisory,
+        benefit_score: 0.0,
+        pressure_ratio: pressure,
+        recent_activity,
+        pinned_memory_ids,
+        pinned_artifact_ids,
+        rolling_summary_excerpt: sess.long_summary.clone(),
+        must_know_constraints: sess.unresolved.clone(),
+    };
+    let snap = jarvis_orchestrator::handoff::plan(&inputs);
+    jarvis_orchestrator::handoff::persist_snapshot(&state.db, &snap)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&snap))
+}
+
+#[derive(Debug, Deserialize)]
+struct HandoffAcceptBody {
+    #[serde(default)]
+    new_title: Option<String>,
+}
+
+async fn post_handoff_accept(
+    state: &Arc<ApiState>,
+    req: Request<Incoming>,
+    id: String,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let body = read_json::<HandoffAcceptBody>(req)
+        .await
+        .unwrap_or(HandoffAcceptBody { new_title: None });
+    let new_id =
+        jarvis_orchestrator::handoff::accept(&state.db, &id, body.new_title)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&serde_json::json!({
+        "handoff_id": id,
+        "target_session_id": new_id,
+    })))
+}
+
+async fn post_handoff_decline(
+    state: &Arc<ApiState>,
+    _req: Request<Incoming>,
+    id: String,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    jarvis_orchestrator::handoff::decline(&state.db, &id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&serde_json::json!({
+        "handoff_id": id,
+        "user_decision": "declined",
+    })))
 }
 
 async fn read_json<T: for<'de> Deserialize<'de>>(req: Request<Incoming>) -> Result<T, ApiError> {

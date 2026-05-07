@@ -126,6 +126,73 @@ pub fn conversation_pending(
     Ok(json_ok(&msgs))
 }
 
+// ── v1.9 handoff endpoints ─────────────────────────────────────────────
+
+pub fn capacity_for_session(
+    db: &Db,
+    session_id: &str,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let sess = jarvis_db::session_repo::get_session(db, session_id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(session_id.to_string()))?;
+    let rolling_tokens = (sess.long_summary.len() / 4) as u32;
+    let budget_tokens: u32 = 8000;
+    let pressure = (rolling_tokens as f32 / budget_tokens as f32).min(1.0);
+    let bus = jarvis_orchestrator::conversation_bus::ConversationBus::new(db.clone());
+    let waiting_user = bus
+        .current_ownership(session_id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .map(|o| {
+            o.interaction_mode
+                == jarvis_orchestrator::conversation_bus::InteractionMode::WaitingUser
+        })
+        .unwrap_or(false);
+    let health = jarvis_control::ContextHealth {
+        session_id: session_id.into(),
+        trace_id: String::new(),
+        injected_tokens: rolling_tokens,
+        budget_tokens,
+        pressure_ratio: pressure,
+        benefit_score: 0.6,
+        benefit_trend: vec![],
+        rolling_summary_tokens: rolling_tokens,
+        force_compress_hits: 0,
+        waiting_user,
+        seconds_since_last_advisory: u64::MAX,
+        steer_just_injected: false,
+    };
+    let level = jarvis_control::evaluate_capacity(
+        &health,
+        jarvis_control::AdvisorPolicy::defaults(),
+    );
+    Ok(json_ok(&serde_json::json!({
+        "session_id": session_id,
+        "advisory_level": level.as_str(),
+        "pressure_ratio": pressure,
+        "benefit_score": health.benefit_score,
+        "rolling_summary_tokens": rolling_tokens,
+        "waiting_user": waiting_user,
+    })))
+}
+
+pub fn handoff_get(
+    db: &Db,
+    id: &str,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let snap = jarvis_orchestrator::handoff::load(db, id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(id.to_string()))?;
+    Ok(json_ok(&snap))
+}
+
+pub fn handoff_list_pending(
+    db: &Db,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let snaps = jarvis_orchestrator::handoff::list_pending(db, 50)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&snaps))
+}
+
 pub fn dashboard_metrics(db: &Db) -> Result<Response<Full<Bytes>>, ApiError> {
     let active_sessions = jarvis_db::session_repo::list_recent(db, 1000)
         .map_err(|e| ApiError::Internal(e.to_string()))?

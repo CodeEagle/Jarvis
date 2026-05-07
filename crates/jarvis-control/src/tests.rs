@@ -158,6 +158,107 @@ fn scheduler_config_defaults_24h_lint() {
     assert_eq!(cfg.scope, "global");
 }
 
+// ── v1.9 CapacityAdvisor (docs/prd/v1.9-context-handoff.md) ────────────
+
+#[cfg(test)]
+fn fresh_health() -> capacity_advisor::ContextHealth {
+    capacity_advisor::ContextHealth {
+        session_id: "sess_x".into(),
+        trace_id: "trc_x".into(),
+        injected_tokens: 1000,
+        budget_tokens: 8000,
+        pressure_ratio: 0.125,
+        benefit_score: 0.7,
+        benefit_trend: vec![],
+        rolling_summary_tokens: 200,
+        force_compress_hits: 0,
+        waiting_user: false,
+        seconds_since_last_advisory: u64::MAX,
+        steer_just_injected: false,
+    }
+}
+
+#[test]
+fn capacity_low_pressure_returns_ok() {
+    let h = fresh_health();
+    let level =
+        capacity_advisor::evaluate(&h, capacity_advisor::AdvisorPolicy::defaults());
+    assert_eq!(level, capacity_advisor::AdvisoryLevel::Ok);
+}
+
+#[test]
+fn capacity_warns_when_benefit_dips_alone() {
+    let mut h = fresh_health();
+    h.benefit_score = 0.3;
+    let level =
+        capacity_advisor::evaluate(&h, capacity_advisor::AdvisorPolicy::defaults());
+    assert_eq!(level, capacity_advisor::AdvisoryLevel::Warn);
+}
+
+#[test]
+fn capacity_recommends_when_declining_and_low_benefit() {
+    let mut h = fresh_health();
+    h.benefit_trend = vec![0.6, 0.45, 0.25];
+    h.benefit_score = 0.25;
+    let level =
+        capacity_advisor::evaluate(&h, capacity_advisor::AdvisorPolicy::defaults());
+    assert_eq!(level, capacity_advisor::AdvisoryLevel::HandoffRecommended);
+}
+
+#[test]
+fn capacity_recommends_on_high_pressure_with_long_summary() {
+    let mut h = fresh_health();
+    h.injected_tokens = 7400; // pressure ≈ 0.925 > 0.85
+    h.budget_tokens = 8000;
+    h.rolling_summary_tokens = 1800;
+    let level =
+        capacity_advisor::evaluate(&h, capacity_advisor::AdvisorPolicy::defaults());
+    assert_eq!(level, capacity_advisor::AdvisoryLevel::HandoffRecommended);
+}
+
+#[test]
+fn capacity_required_when_extreme_pressure_and_force_compress() {
+    let mut h = fresh_health();
+    h.injected_tokens = 7700;
+    h.budget_tokens = 8000;
+    h.force_compress_hits = 3;
+    let level =
+        capacity_advisor::evaluate(&h, capacity_advisor::AdvisorPolicy::defaults());
+    assert_eq!(level, capacity_advisor::AdvisoryLevel::HandoffRequired);
+}
+
+#[test]
+fn capacity_throttle_demotes_recommended_to_warn() {
+    let mut h = fresh_health();
+    h.injected_tokens = 7400;
+    h.rolling_summary_tokens = 1800;
+    h.seconds_since_last_advisory = 30; // < 60s default throttle
+    let level =
+        capacity_advisor::evaluate(&h, capacity_advisor::AdvisorPolicy::defaults());
+    assert_eq!(level, capacity_advisor::AdvisoryLevel::Warn);
+}
+
+#[test]
+fn capacity_waiting_user_silences_to_ok() {
+    let mut h = fresh_health();
+    h.benefit_trend = vec![0.6, 0.4, 0.2];
+    h.benefit_score = 0.2;
+    h.waiting_user = true;
+    let level =
+        capacity_advisor::evaluate(&h, capacity_advisor::AdvisorPolicy::defaults());
+    assert_eq!(level, capacity_advisor::AdvisoryLevel::Ok);
+}
+
+#[test]
+fn capacity_steer_just_injected_silences() {
+    let mut h = fresh_health();
+    h.benefit_score = 0.2;
+    h.steer_just_injected = true;
+    let level =
+        capacity_advisor::evaluate(&h, capacity_advisor::AdvisorPolicy::defaults());
+    assert_eq!(level, capacity_advisor::AdvisoryLevel::Ok);
+}
+
 // ── replication daemon ─────────────────────────────────────────────────
 
 #[tokio::test]
