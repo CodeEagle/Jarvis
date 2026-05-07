@@ -201,6 +201,185 @@ async fn audit_returns_array() {
     assert_eq!(json.as_array().unwrap().len(), 1);
 }
 
+// ── Conversation API (PRD §23.3) ────────────────────────────────────────
+
+#[tokio::test]
+async fn conversation_ownership_returns_null_when_idle() {
+    let state = fresh_state();
+    let resp = handlers::conversation_ownership(&state.db, "sess_x").unwrap();
+    let body = body_bytes(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json.is_null());
+}
+
+#[tokio::test]
+async fn conversation_ownership_returns_record_after_acquire() {
+    let state = fresh_state();
+    let bus = jarvis_orchestrator::conversation_bus::ConversationBus::new(state.db.clone());
+    bus.acquire_ownership(
+        "sess_x",
+        "agent_a",
+        "orchestrator",
+        None,
+        jarvis_orchestrator::conversation_bus::InteractionMode::Listening,
+    )
+    .unwrap();
+    let resp = handlers::conversation_ownership(&state.db, "sess_x").unwrap();
+    let body = body_bytes(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["agent_id"], "agent_a");
+    assert_eq!(json["interaction_mode"], "listening");
+}
+
+#[tokio::test]
+async fn conversation_sub_channels_lists_active() {
+    let state = fresh_state();
+    let bus = jarvis_orchestrator::conversation_bus::ConversationBus::new(state.db.clone());
+    bus.open_sub_channel("sess_y", "st_1", "coding", None).unwrap();
+    let resp = handlers::conversation_sub_channels(&state.db, "sess_y").unwrap();
+    let body = body_bytes(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["sub_task_id"], "st_1");
+}
+
+#[tokio::test]
+async fn conversation_activity_lists_cards() {
+    let state = fresh_state();
+    let store = jarvis_orchestrator::activity_card::ActivityCardStore::new(state.db.clone());
+    store
+        .create(jarvis_orchestrator::activity_card::CardDraft {
+            session_id: "sess_z",
+            sub_task_id: Some("st_a"),
+            trace_id: None,
+            agent_type: "coding",
+            agent_display_name: "代码助手",
+            agent_avatar_emoji: "💻",
+            title: "fixing the bug",
+        })
+        .unwrap();
+    let resp = handlers::conversation_activity(&state.db, "sess_z").unwrap();
+    let body = body_bytes(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["agent_type"], "coding");
+}
+
+#[tokio::test]
+async fn conversation_pending_lists_queued_messages() {
+    let state = fresh_state();
+    let bus = jarvis_orchestrator::conversation_bus::ConversationBus::new(state.db.clone());
+    bus.enqueue_pending_message("sess_p", "wait for me", "queue").unwrap();
+    let resp = handlers::conversation_pending(&state.db, "sess_p").unwrap();
+    let body = body_bytes(resp).await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["content"], "wait for me");
+    assert_eq!(arr[0]["resolved"], false);
+}
+
+#[tokio::test]
+async fn conversation_reply_post_persists_pending_message() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let arc_state = fresh_state();
+    let server_state = arc_state.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let svc_state = server_state.clone();
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |req| {
+                    handle(svc_state.clone(), req, peer)
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    let body = r#"{"content":"select option B","routing_decision":"sub_agent_reply"}"#;
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "POST /conversation/sess_reply/reply HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        client.read_to_end(&mut buf),
+    )
+    .await;
+    let response = String::from_utf8_lossy(&buf);
+    assert!(response.contains("200 OK"), "response: {response}");
+    assert!(response.contains("\"session_id\":\"sess_reply\""));
+
+    // Verify persistence.
+    let bus = jarvis_orchestrator::conversation_bus::ConversationBus::new(arc_state.db.clone());
+    let pending = bus.list_pending_messages("sess_reply").unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].content, "select option B");
+    assert_eq!(pending[0].routing_decision, "sub_agent_reply");
+    server.abort();
+}
+
+#[tokio::test]
+async fn conversation_steer_path_mismatch_rejects() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let arc_state = fresh_state();
+    let server_state = arc_state.clone();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let svc_state = server_state.clone();
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |req| {
+                    handle(svc_state.clone(), req, peer)
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    // Path says sess_a, body says sess_b → must reject.
+    let body = r#"{"session_id":"sess_b","sub_task_id":"st_x","content":"keep stream","scope":"constraint","inject_at":"next_step"}"#;
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "POST /conversation/sess_a/steer HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        client.read_to_end(&mut buf),
+    )
+    .await;
+    let response = String::from_utf8_lossy(&buf);
+    assert!(response.contains("400 Bad Request"), "expected 400: {response}");
+    server.abort();
+}
+
 /// Concurrency stress: open N SSE clients against distinct sessions
 /// and verify each client receives only its session's events. Catches
 /// per-session filter regressions and head-of-line blocking between

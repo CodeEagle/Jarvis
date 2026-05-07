@@ -76,6 +76,56 @@ pub fn session_messages(db: &Db, session: &str) -> Result<Response<Full<Bytes>>,
     Ok(json_ok(&messages))
 }
 
+/// GET /conversation/{session}/ownership — current OwnershipRecord
+/// (PRD §23.3). Returns null when no Agent currently holds the bus.
+pub fn conversation_ownership(
+    db: &Db,
+    session_id: &str,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let bus = jarvis_orchestrator::conversation_bus::ConversationBus::new(db.clone());
+    let record = bus
+        .current_ownership(session_id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&record))
+}
+
+/// GET /conversation/{session}/sub-channels — active SubChannels.
+pub fn conversation_sub_channels(
+    db: &Db,
+    session_id: &str,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let bus = jarvis_orchestrator::conversation_bus::ConversationBus::new(db.clone());
+    let channels = bus
+        .list_active_sub_channels(session_id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&channels))
+}
+
+/// GET /conversation/{session}/activity — ActivityCard list (PRD §8.13).
+pub fn conversation_activity(
+    db: &Db,
+    session_id: &str,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let store = jarvis_orchestrator::activity_card::ActivityCardStore::new(db.clone());
+    let cards = store
+        .list_for_session(session_id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&cards))
+}
+
+/// GET /conversation/{session}/pending — pending user messages waiting
+/// for the owner Agent.
+pub fn conversation_pending(
+    db: &Db,
+    session_id: &str,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let bus = jarvis_orchestrator::conversation_bus::ConversationBus::new(db.clone());
+    let msgs = bus
+        .list_pending_messages(session_id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&msgs))
+}
+
 pub fn dashboard_metrics(db: &Db) -> Result<Response<Full<Bytes>>, ApiError> {
     let active_sessions = jarvis_db::session_repo::list_recent(db, 1000)
         .map_err(|e| ApiError::Internal(e.to_string()))?

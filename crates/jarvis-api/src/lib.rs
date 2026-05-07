@@ -101,6 +101,73 @@ async fn handle(
         (Method::POST, "/steer") => post_steer(&state, req).await,
         (Method::POST, "/interrupt") => post_interrupt(&state, req).await,
         (Method::POST, "/maintenance/lint") => post_maintenance_lint(&state, req).await,
+        // ── Conversation API (PRD §23.3) ────────────────────────────
+        (Method::GET, p)
+            if p.starts_with("/conversation/") && p.ends_with("/ownership") =>
+        {
+            let id = p
+                .strip_prefix("/conversation/")
+                .and_then(|s| s.strip_suffix("/ownership"))
+                .unwrap_or("");
+            handlers::conversation_ownership(&state.db, id)
+        }
+        (Method::GET, p)
+            if p.starts_with("/conversation/") && p.ends_with("/sub-channels") =>
+        {
+            let id = p
+                .strip_prefix("/conversation/")
+                .and_then(|s| s.strip_suffix("/sub-channels"))
+                .unwrap_or("");
+            handlers::conversation_sub_channels(&state.db, id)
+        }
+        (Method::GET, p)
+            if p.starts_with("/conversation/") && p.ends_with("/activity") =>
+        {
+            let id = p
+                .strip_prefix("/conversation/")
+                .and_then(|s| s.strip_suffix("/activity"))
+                .unwrap_or("");
+            handlers::conversation_activity(&state.db, id)
+        }
+        (Method::GET, p)
+            if p.starts_with("/conversation/") && p.ends_with("/pending") =>
+        {
+            let id = p
+                .strip_prefix("/conversation/")
+                .and_then(|s| s.strip_suffix("/pending"))
+                .unwrap_or("");
+            handlers::conversation_pending(&state.db, id)
+        }
+        (Method::POST, p)
+            if p.starts_with("/conversation/") && p.ends_with("/reply") =>
+        {
+            let id = p
+                .strip_prefix("/conversation/")
+                .and_then(|s| s.strip_suffix("/reply"))
+                .unwrap_or("")
+                .to_string();
+            post_conversation_reply(&state, req, id).await
+        }
+        (Method::POST, p)
+            if p.starts_with("/conversation/") && p.ends_with("/interrupt") =>
+        {
+            let id = p
+                .strip_prefix("/conversation/")
+                .and_then(|s| s.strip_suffix("/interrupt"))
+                .unwrap_or("")
+                .to_string();
+            post_conversation_interrupt(&state, req, id).await
+        }
+        (Method::POST, p)
+            if p.starts_with("/conversation/") && p.ends_with("/steer") =>
+        {
+            let id = p
+                .strip_prefix("/conversation/")
+                .and_then(|s| s.strip_suffix("/steer"))
+                .unwrap_or("")
+                .to_string();
+            post_conversation_steer(&state, req, id).await
+        }
         (Method::POST, p)
             if p.starts_with("/walkthrough/") && p.ends_with("/approve") =>
         {
@@ -417,6 +484,114 @@ async fn post_walkthrough_decision(
         other => ApiError::Internal(other.to_string()),
     })?;
     Ok(json_ok(&doc))
+}
+
+/// POST /conversation/{session}/reply — record a user reply for the
+/// current waiting-user owner. Stores into pending_user_messages.
+/// `routing_decision` describes how downstream should handle it
+/// (sub_agent_reply / interrupt / queue / progress_query).
+#[derive(Debug, Deserialize)]
+struct ConversationReplyBody {
+    content: String,
+    #[serde(default = "default_routing")]
+    routing_decision: String,
+}
+
+fn default_routing() -> String {
+    "sub_agent_reply".into()
+}
+
+async fn post_conversation_reply(
+    state: &Arc<ApiState>,
+    req: Request<Incoming>,
+    session_id: String,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let body = read_json::<ConversationReplyBody>(req).await?;
+    if body.content.trim().is_empty() {
+        return Err(ApiError::BadRequest("content cannot be empty".into()));
+    }
+    let bus = jarvis_orchestrator::conversation_bus::ConversationBus::new(state.db.clone());
+    let id = bus
+        .enqueue_pending_message(&session_id, &body.content, &body.routing_decision)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&serde_json::json!({
+        "id": id,
+        "session_id": session_id,
+        "routing_decision": body.routing_decision,
+    })))
+}
+
+/// POST /conversation/{session}/interrupt — session-scoped variant
+/// of /interrupt. Body provides sub_task_id + kind.
+async fn post_conversation_interrupt(
+    state: &Arc<ApiState>,
+    req: Request<Incoming>,
+    session_id: String,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let body = read_json::<InterruptBody>(req).await?;
+    if body.session_id != session_id {
+        return Err(ApiError::BadRequest(format!(
+            "session_id in path ({session_id}) and body ({}) disagree",
+            body.session_id
+        )));
+    }
+    let ctrl = jarvis_orchestrator::interrupt::InterruptController::new(state.db.clone());
+    let outcome = match body.kind.as_str() {
+        "soft" => ctrl.soft(&body.session_id, &body.sub_task_id, body.node_id.as_deref()),
+        "hard" => ctrl.hard(&body.session_id, &body.sub_task_id, body.node_id.as_deref()),
+        "async" => ctrl.async_tag(&body.session_id, &body.sub_task_id),
+        other => return Err(ApiError::BadRequest(format!("unknown kind: {other}"))),
+    }
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(json_ok(&serde_json::json!({
+        "outcome": format!("{outcome:?}"),
+        "session_id": session_id,
+    })))
+}
+
+/// POST /conversation/{session}/steer — session-scoped variant of /steer.
+async fn post_conversation_steer(
+    state: &Arc<ApiState>,
+    req: Request<Incoming>,
+    session_id: String,
+) -> Result<Response<Full<Bytes>>, ApiError> {
+    let body = read_json::<SteerBody>(req).await?;
+    if body.session_id != session_id {
+        return Err(ApiError::BadRequest(format!(
+            "session_id in path ({session_id}) and body ({}) disagree",
+            body.session_id
+        )));
+    }
+    let scope = match body.scope.as_str() {
+        "direction" => jarvis_orchestrator::steer::SteerScope::Direction,
+        "priority" => jarvis_orchestrator::steer::SteerScope::Priority,
+        _ => jarvis_orchestrator::steer::SteerScope::Constraint,
+    };
+    let inject_at = match body.inject_at.as_str() {
+        "next_tool_call" => jarvis_orchestrator::steer::InjectAt::NextToolCall,
+        "next_checkpoint" => jarvis_orchestrator::steer::InjectAt::NextCheckpoint,
+        _ => jarvis_orchestrator::steer::InjectAt::NextStep,
+    };
+    let ctrl = jarvis_orchestrator::steer::SteerController::new(state.db.clone());
+    let outcome = ctrl
+        .enqueue(jarvis_orchestrator::steer::EnqueueRequest {
+            session_id: &body.session_id,
+            sub_task_id: &body.sub_task_id,
+            trace_id: None,
+            content: &body.content,
+            scope,
+            inject_at,
+        })
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let payload = match outcome {
+        jarvis_orchestrator::steer::SteerEnqueueOutcome::Accepted(s) => {
+            serde_json::json!({"status":"accepted","id": s.id, "session_id": session_id})
+        }
+        jarvis_orchestrator::steer::SteerEnqueueOutcome::RateLimited { recent_count } => {
+            serde_json::json!({"status":"rate_limited","recent_count": recent_count})
+        }
+    };
+    Ok(json_ok(&payload))
 }
 
 async fn read_json<T: for<'de> Deserialize<'de>>(req: Request<Incoming>) -> Result<T, ApiError> {

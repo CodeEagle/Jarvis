@@ -271,6 +271,72 @@ impl ConversationBus {
         })
     }
 
+    /// Append a user message to the pending queue for later
+    /// processing by the owner Agent (PRD §8.11.4 Step 5: when the
+    /// new message is relevant to current task and owner is busy).
+    /// Returns the row id.
+    pub fn enqueue_pending_message(
+        &self,
+        session_id: &str,
+        content: &str,
+        routing_decision: &str,
+    ) -> DbResult<String> {
+        let id = new_id_with_prefix("pmsg");
+        let n = now().to_rfc3339();
+        self.db.with(|conn| {
+            conn.execute(
+                "INSERT INTO pending_user_messages
+                    (id, session_id, content, routing_decision, resolved, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+                params![id, session_id, content, routing_decision, n],
+            )?;
+            Ok(())
+        })?;
+        Ok(id)
+    }
+
+    /// List pending (resolved=0) messages for a session, oldest first.
+    pub fn list_pending_messages(
+        &self,
+        session_id: &str,
+    ) -> DbResult<Vec<PendingMessage>> {
+        self.db.with(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, session_id, content, routing_decision, resolved, created_at
+                   FROM pending_user_messages
+                  WHERE session_id = ?1 AND resolved = 0
+                  ORDER BY created_at ASC",
+            )?;
+            let rows = stmt
+                .query_map(params![session_id], |row| {
+                    let ts: String = row.get(5)?;
+                    Ok(PendingMessage {
+                        id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        content: row.get(2)?,
+                        routing_decision: row.get(3)?,
+                        resolved: row.get::<_, i64>(4)? != 0,
+                        created_at: DateTime::parse_from_rfc3339(&ts)
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .unwrap_or_else(|_| Utc::now()),
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+    }
+
+    /// Mark a pending message as resolved (consumed by the owner Agent).
+    pub fn resolve_pending_message(&self, id: &str) -> DbResult<()> {
+        self.db.with(|conn| {
+            conn.execute(
+                "UPDATE pending_user_messages SET resolved = 1 WHERE id = ?1",
+                params![id],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Section 8.11.4 user-message router. Returns the routing decision
     /// without performing any work — the caller dispatches based on
     /// the result.
@@ -362,4 +428,14 @@ pub enum UserMessageRoute {
     Steer,
     ProgressQuery,
     Normal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingMessage {
+    pub id: String,
+    pub session_id: String,
+    pub content: String,
+    pub routing_decision: String,
+    pub resolved: bool,
+    pub created_at: DateTime<Utc>,
 }
