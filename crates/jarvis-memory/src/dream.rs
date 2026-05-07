@@ -12,6 +12,12 @@
 //!   sufficient supporting evidence promotes it into a `fact_memory`
 //!   at confidence 0.75 (the spec is explicit that we never claim
 //!   certainty for inferences).
+//!
+//! - `gap_trigger` (PRD §12.6.1) is the "make use of idle moments"
+//!   path: when a sub-agent is sitting in `waiting_user` AND the
+//!   Tier-4 fragment population has crossed an emergency threshold,
+//!   we run only the lint layer (not cluster, not inference) so
+//!   memory keeps tidy without spending the user's wall-clock time.
 
 use chrono::{DateTime, Duration, Utc};
 use jarvis_core::ids::new_memory_id;
@@ -381,4 +387,71 @@ pub enum EvaluationOutcome {
     TentativeInference { memory_id: String },
     /// Promoted directly to a `fact_memory` at sub-1.0 confidence.
     ConfirmedAsFact { memory_id: String },
+}
+
+// ── gap trigger (Section 12.6.1) ───────────────────────────────────────
+
+#[derive(Debug, Clone, Copy)]
+pub struct GapTriggerPolicy {
+    /// Tier-4 fragment count above which the gap trigger fires.
+    pub tier4_threshold: u32,
+}
+
+impl GapTriggerPolicy {
+    pub const fn defaults() -> Self {
+        Self { tier4_threshold: 80 }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GapTriggerReport {
+    pub fired: bool,
+    pub tier4_observed: u32,
+    pub lint_report: Option<crate::lint::LintReport>,
+    pub skip_reason: Option<String>,
+}
+
+/// Caller supplies `any_subagent_waiting_user` so this layer doesn't
+/// depend on the orchestrator. Returns the lint report on fire,
+/// otherwise the skip reason.
+pub fn gap_trigger(
+    db: &jarvis_db::Db,
+    scope: &str,
+    any_subagent_waiting_user: bool,
+    policy: GapTriggerPolicy,
+) -> jarvis_db::error::DbResult<GapTriggerReport> {
+    if !any_subagent_waiting_user {
+        return Ok(GapTriggerReport {
+            fired: false,
+            tier4_observed: 0,
+            lint_report: None,
+            skip_reason: Some("no sub-agent in waiting_user state".into()),
+        });
+    }
+    let memories = jarvis_db::memory_repo::list_by_scope(db, scope, 4096)?;
+    let tier4 = memories
+        .iter()
+        .filter(|m| m.tier == 4 && matches!(m.status, MemoryStatus::Approved))
+        .count() as u32;
+    if tier4 < policy.tier4_threshold {
+        return Ok(GapTriggerReport {
+            fired: false,
+            tier4_observed: tier4,
+            lint_report: None,
+            skip_reason: Some(format!(
+                "tier-4 count {tier4} < threshold {}",
+                policy.tier4_threshold
+            )),
+        });
+    }
+    // Fire the lint layer ONLY — Section 12.6.1 explicitly forbids
+    // cluster / inference here so we don't burn user wall-clock.
+    let lint = crate::lint::MemoryLint::new(db.clone());
+    let report = lint.run(scope)?;
+    Ok(GapTriggerReport {
+        fired: true,
+        tier4_observed: tier4,
+        lint_report: Some(report),
+        skip_reason: None,
+    })
 }

@@ -349,3 +349,20 @@ pub fn match_agent<'a>(
             .expect("general agent must exist")
     })
 }
+
+/// Resolve an `@`-mention name (display_name / type / alias) to the
+/// agent definition. Only `mentionable = true` agents are considered.
+/// PRD §8.12.3.
+pub fn match_agent_by_mention<'a>(
+    name: &str,
+    registry: &'a [AgentDefinition],
+) -> Option<&'a AgentDefinition> {
+    registry.iter().find(|a| a.matches_mention(name))
+}
+
+/// Every agent the user is allowed to `@`. Useful for the unresolved-
+/// mention warning the router emits and the help screen the macOS
+/// composer shows. PRD §8.12.3.
+pub fn get_mentionable_agents(registry: &[AgentDefinition]) -> Vec<&AgentDefinition> {
+    registry.iter().filter(|a| a.is_mentionable()).collect()
+}

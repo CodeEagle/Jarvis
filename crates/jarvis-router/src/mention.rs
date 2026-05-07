@@ -43,8 +43,14 @@ pub fn parse_mentions(input: &str, registry: &[AgentDefinition]) -> MentionParse
     let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
 
     let valid = mentions.iter().filter(|m| !m.unresolved).count();
+    // PRD §5.3a: a single resolvable mention paired with a directional
+    // / constraint phrase is parsed as `Steer`. The Router decides
+    // whether to actually act on it as a steer (target agent must be
+    // currently running) — otherwise it falls back to a normal
+    // `Single` dispatch.
     let mention_mode = match valid {
         0 => MentionMode::None,
+        1 if looks_like_steer(&clean) => MentionMode::Steer,
         1 => MentionMode::Single,
         _ => MentionMode::Multi,
     };

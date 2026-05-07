@@ -17,8 +17,9 @@ pub mod vectors;
 
 pub use cold_start::{ColdStartSnapshot, ColdStartStore, SnapshotInputs};
 pub use dream::{
-    ClusterPolicy, ClusterReport, DreamCluster, DreamInference,
-    EvaluationOutcome, InferenceCandidate, InferencePolicy, InferenceReport,
+    gap_trigger, ClusterPolicy, ClusterReport, DreamCluster, DreamInference,
+    EvaluationOutcome, GapTriggerPolicy, GapTriggerReport, InferenceCandidate,
+    InferencePolicy, InferenceReport,
 };
 pub use lint::{LintReport, MemoryLint};
 pub use persona::{Persona, PersonaLayer};

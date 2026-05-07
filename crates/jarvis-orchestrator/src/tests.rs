@@ -621,6 +621,47 @@ fn walkthrough_manual_reject_records_reason_in_notes() {
 }
 
 #[test]
+fn walkthrough_from_handoff_parses_section_headings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("HANDOFF.md");
+    std::fs::write(
+        &path,
+        r#"# Refactor sync module
+
+## Summary
+Split SyncManager into three classes.
+
+## Change
+Touched 3 files.
+
+## Test result
+12/12 passed.
+
+## Risk
+Low. Stream interface preserved.
+"#,
+    )
+    .unwrap();
+    let doc = walkthrough::from_handoff(dir.path(), "st_h", "sess_h", "coding")
+        .unwrap()
+        .expect("HANDOFF should parse");
+    assert_eq!(doc.title, "Refactor sync module");
+    assert_eq!(doc.sections.len(), 4);
+    let kinds: Vec<&str> = doc.sections.iter().map(|s| s.r#type.as_str()).collect();
+    assert!(kinds.contains(&"summary"));
+    assert!(kinds.contains(&"change"));
+    assert!(kinds.contains(&"test_result"));
+    assert!(kinds.contains(&"risk"));
+}
+
+#[test]
+fn walkthrough_from_handoff_returns_none_when_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = walkthrough::from_handoff(dir.path(), "st_h", "sess_h", "coding").unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
 fn walkthrough_store_round_trip_and_auto_review() {
     let db = Db::in_memory().unwrap();
     let store = walkthrough::WalkthroughStore::new(db);
@@ -737,6 +778,28 @@ fn verifier_run_marks_verified_when_all_match() {
 }
 
 // ── activity card ───────────────────────────────────────────────────────
+
+#[test]
+fn activity_card_mention_override_persists() {
+    let db = Db::in_memory().unwrap();
+    let store = activity_card::ActivityCardStore::new(db);
+    let mut card = store
+        .create(activity_card::CardDraft {
+            session_id: "sess_m",
+            sub_task_id: Some("st_m"),
+            trace_id: None,
+            agent_type: "coding",
+            agent_display_name: "代码助手",
+            agent_avatar_emoji: "💻",
+            title: "x",
+        })
+        .unwrap();
+    assert!(!card.mention_override);
+    card.mention_override = true;
+    store.upsert(&card).unwrap();
+    let back = store.get(&card.id).unwrap().unwrap();
+    assert!(back.mention_override);
+}
 
 #[test]
 fn activity_card_lifecycle() {

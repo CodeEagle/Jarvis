@@ -464,6 +464,7 @@ CREATE TABLE IF NOT EXISTS activity_cards (
     is_expanded         INTEGER NOT NULL DEFAULT 1,
     can_interrupt       INTEGER NOT NULL DEFAULT 1,
     interrupt_cost      TEXT NOT NULL DEFAULT 'low',
+    mention_override    INTEGER NOT NULL DEFAULT 0,
     started_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
     completed_at        TEXT

@@ -72,7 +72,21 @@ crates/
                         growth / trace / replay / audit / maintenance / serve
 ```
 
-**273 unit tests pass** across the workspace.
+**287 unit tests pass** across the workspace.
+
+Tracking PRD **v1.8** (2026-05-04 spec). All v1.4–v1.8 changelog items
+are either implemented or have a concrete extension seam:
+
+- v1.4 §12.3a emotion gate, §12.6.1 Dream gap-trigger, §8.14.4 HANDOFF
+  primary-input, §20.4 Tentacle locks — ✅
+- v1.5 Control/Task plane separation, raw_event_log immutability,
+  Steer protocol — ✅
+- v1.6 §23 API expansion, §24 dependency graph + 5-stage MVP — ✅
+- v1.7 Section 30 全模块测试规范 (30.1–30.14) — ✅ (30.15 below)
+- v1.8 @mention 协议 — ✅ (parser produces 4 modes, Router applies
+  override / Steer demotion, ActivityCard renders `[@ 指定]` chip,
+  unresolved mentions emit `mention.unresolved` GrowthEvent for
+  new-agent-need discovery)
 
 ---
 

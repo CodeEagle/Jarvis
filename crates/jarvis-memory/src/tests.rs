@@ -655,6 +655,52 @@ fn dream_inference_below_threshold_creates_tentative_with_expiry() {
     assert!(stored.expires_at.is_some());
 }
 
+// ── gap-trigger (PRD §12.6.1 / §30.8) ──────────────────────────────────
+
+#[test]
+fn gap_trigger_skips_when_no_subagent_waiting() {
+    let db = Db::in_memory().unwrap();
+    // Seed enough Tier-4 fragments to clear the threshold so the
+    // *only* reason gap_trigger should not fire is "no waiting agent".
+    for i in 0..100 {
+        write_episode(&db, &format!("frag_{i}"), &format!("frag {i}"), 0);
+    }
+    let report =
+        dream::gap_trigger(&db, "global", false, dream::GapTriggerPolicy::defaults())
+            .unwrap();
+    assert!(!report.fired);
+    assert!(report.skip_reason.unwrap().contains("waiting_user"));
+}
+
+#[test]
+fn gap_trigger_skips_when_tier4_under_threshold() {
+    let db = Db::in_memory().unwrap();
+    // Only a handful of fragments — threshold is 80.
+    for i in 0..5 {
+        write_episode(&db, &format!("frag_{i}"), &format!("frag {i}"), 0);
+    }
+    let report =
+        dream::gap_trigger(&db, "global", true, dream::GapTriggerPolicy::defaults())
+            .unwrap();
+    assert!(!report.fired);
+    assert!(report.skip_reason.unwrap().contains("threshold"));
+}
+
+#[test]
+fn gap_trigger_fires_lint_only_when_both_conditions_met() {
+    let db = Db::in_memory().unwrap();
+    // Clear the threshold (default 80).
+    for i in 0..85 {
+        write_episode(&db, &format!("frag_{i}"), &format!("frag {i}"), 0);
+    }
+    let report =
+        dream::gap_trigger(&db, "global", true, dream::GapTriggerPolicy::defaults())
+            .unwrap();
+    assert!(report.fired);
+    assert!(report.tier4_observed >= 85);
+    assert!(report.lint_report.is_some());
+}
+
 // ── persona layer ───────────────────────────────────────────────────────
 
 #[test]

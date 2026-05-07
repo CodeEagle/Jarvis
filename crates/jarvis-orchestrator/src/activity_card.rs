@@ -68,6 +68,11 @@ pub struct ActivityCard {
     pub is_expanded: bool,
     pub can_interrupt: bool,
     pub interrupt_cost: String,
+    /// True when this card is rendering an agent the user picked
+    /// explicitly with `@`. The collaboration panel surfaces a
+    /// `[@ 指定]` chip so users see why this Agent was chosen.
+    /// PRD §8.13.3.
+    pub mention_override: bool,
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -116,6 +121,7 @@ impl ActivityCardStore {
             is_expanded: true,
             can_interrupt: true,
             interrupt_cost: "low".to_string(),
+            mention_override: false,
             started_at: n,
             updated_at: n,
             completed_at: None,
@@ -133,9 +139,10 @@ impl ActivityCardStore {
                      current_action, progress_text, result_summary,
                      error_message, interaction_json, artifacts_json,
                      is_expanded, can_interrupt, interrupt_cost,
+                     mention_override,
                      started_at, updated_at, completed_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
                  ON CONFLICT(id) DO UPDATE SET
                     status = excluded.status,
                     current_action = excluded.current_action,
@@ -147,6 +154,7 @@ impl ActivityCardStore {
                     is_expanded = excluded.is_expanded,
                     can_interrupt = excluded.can_interrupt,
                     interrupt_cost = excluded.interrupt_cost,
+                    mention_override = excluded.mention_override,
                     updated_at = excluded.updated_at,
                     completed_at = excluded.completed_at",
                 params![
@@ -168,6 +176,7 @@ impl ActivityCardStore {
                     if card.is_expanded { 1 } else { 0 },
                     if card.can_interrupt { 1 } else { 0 },
                     card.interrupt_cost,
+                    if card.mention_override { 1 } else { 0 },
                     card.started_at.to_rfc3339(),
                     card.updated_at.to_rfc3339(),
                     card.completed_at.map(|t| t.to_rfc3339()),
@@ -252,7 +261,7 @@ const SELECT_CARD_PREFIX: &str = "SELECT id, session_id, sub_task_id, trace_id,
         agent_type, agent_display_name, agent_avatar_emoji,
         status, title, current_action, progress_text,
         result_summary, error_message, interaction_json, artifacts_json,
-        is_expanded, can_interrupt, interrupt_cost,
+        is_expanded, can_interrupt, interrupt_cost, mention_override,
         started_at, updated_at, completed_at
    FROM activity_cards";
 
@@ -260,7 +269,7 @@ const SELECT_CARD: &str = "SELECT id, session_id, sub_task_id, trace_id,
         agent_type, agent_display_name, agent_avatar_emoji,
         status, title, current_action, progress_text,
         result_summary, error_message, interaction_json, artifacts_json,
-        is_expanded, can_interrupt, interrupt_cost,
+        is_expanded, can_interrupt, interrupt_cost, mention_override,
         started_at, updated_at, completed_at
    FROM activity_cards WHERE id = ?1";
 
@@ -276,7 +285,7 @@ fn parse_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActivityCard> {
                 )
             })
     };
-    let completed_str: Option<String> = row.get(20)?;
+    let completed_str: Option<String> = row.get(21)?;
     Ok(ActivityCard {
         id: row.get(0)?,
         session_id: row.get(1)?,
@@ -296,8 +305,9 @@ fn parse_card(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActivityCard> {
         is_expanded: row.get::<_, i64>(15)? != 0,
         can_interrupt: row.get::<_, i64>(16)? != 0,
         interrupt_cost: row.get(17)?,
-        started_at: parse_dt(row.get(18)?)?,
-        updated_at: parse_dt(row.get(19)?)?,
+        mention_override: row.get::<_, i64>(18)? != 0,
+        started_at: parse_dt(row.get(19)?)?,
+        updated_at: parse_dt(row.get(20)?)?,
         completed_at: completed_str.map(parse_dt).transpose()?,
     })
 }

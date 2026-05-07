@@ -57,9 +57,10 @@ pub use verifier::{
     CheckType, VerifierCheck, VerifierReport, VerifierStore,
 };
 pub use walkthrough::{
-    new_draft as new_walkthrough_draft, new_section as new_walkthrough_section,
-    ApprovalStatus, AutoApprovalDecision, RiskLevel, SectionType,
-    VerificationStatus, WalkthroughDoc, WalkthroughSection, WalkthroughStore,
+    from_handoff as walkthrough_from_handoff, new_draft as new_walkthrough_draft,
+    new_section as new_walkthrough_section, ApprovalStatus, AutoApprovalDecision,
+    RiskLevel, SectionType, VerificationStatus, WalkthroughDoc, WalkthroughSection,
+    WalkthroughStore,
 };
 pub use workspace::*;
 

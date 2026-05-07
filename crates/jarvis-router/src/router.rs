@@ -12,7 +12,7 @@ use jarvis_growth::{Collector, SourceModule};
 
 use crate::agent_registry::{builtin_agents, match_agent};
 use crate::intent::{apply_rules, dominant_hint};
-use crate::mention::{looks_like_steer, parse_mentions};
+use crate::mention::parse_mentions;
 use crate::session_resolver::{
     decide, has_explicit_reference, rank_sessions, SessionDecision,
 };
@@ -202,6 +202,22 @@ impl Router {
         log_mention(&self.db, &mention, input.session_id_hint, &trace_id)?;
         let mention_warning = build_mention_warning(&mention, &self.registry);
 
+        // PRD §5.3a: every unresolved @mention emits a GrowthEvent so
+        // the Growth Engine can spot accumulated demand for new
+        // agents (or the user typing a name that doesn't exist).
+        // Failures are swallowed per Section 5.5.
+        for unresolved in mention.mentions.iter().filter(|m| m.unresolved) {
+            let _ = self.growth.emit(
+                SourceModule::Router,
+                "mention.unresolved",
+                Some(&trace_id),
+                serde_json::json!({
+                    "raw_text": unresolved.raw_text,
+                    "session_id": input.session_id_hint,
+                }),
+            );
+        }
+
         // Step 1: rule-layer hints.
         let rule_hints = apply_rules(&mention.clean_input);
         let primary_intent = dominant_hint(&rule_hints)
@@ -272,19 +288,21 @@ impl Router {
                     .resolved_type
                     .clone()
                     .expect("mention is valid");
-                // Steer mode: if mentioned agent is currently running and
-                // the message looks like a directional nudge, mark it for
-                // steer rather than dispatch.
-                if input
-                    .running_agent_types
-                    .iter()
-                    .any(|t| t == &ty)
-                    && looks_like_steer(&mention.clean_input)
-                {
+                chosen_agent_type = ty;
+                mention_override = true;
+            }
+            MentionMode::Steer => {
+                // Parser flagged Steer based on phrasing alone; we
+                // promote to a real steer signal only when the target
+                // agent is running. Otherwise it falls back to a
+                // normal Single dispatch (PRD §5.3a).
+                let ty = valid_mentions[0]
+                    .resolved_type
+                    .clone()
+                    .expect("mention is valid");
+                if input.running_agent_types.iter().any(|t| t == &ty) {
                     chosen_agent_type = ty.clone();
                     override_action = Some("steer".into());
-                    // sub_task_id is not known here; the conversation bus
-                    // is responsible for matching to the running task.
                     steer_target_sub_task_id = None;
                     steer_content = Some(mention.clean_input.clone());
                 } else {
@@ -300,11 +318,7 @@ impl Router {
                     .collect();
                 mention_override = true;
             }
-            // Steer detection logic above uses Single + running heuristic.
-            // The Steer variant of MentionMode is never produced by the
-            // parser yet; we keep parity with the protocol for forward
-            // compatibility.
-            MentionMode::Steer | MentionMode::None => {
+            MentionMode::None => {
                 let agent = match_agent(&primary_intent, &domain, &self.registry);
                 chosen_agent_type = agent.r#type.clone();
             }

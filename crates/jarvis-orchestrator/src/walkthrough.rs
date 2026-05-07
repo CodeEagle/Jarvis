@@ -461,3 +461,70 @@ pub fn new_section(
         files_changed: 0,
     }
 }
+
+/// Build a `WalkthroughDoc` from a Tentacle directory's HANDOFF.md
+/// (PRD §8.14.4). The HANDOFF.md is the sub-agent's structured
+/// "what I did and why" output; the Walkthrough doc is its
+/// formalisation. We treat the file's section headings as section
+/// titles and their bodies as section content.
+///
+/// Returns `Ok(None)` when no HANDOFF.md exists — callers fall back
+/// to the SubTaskResult-only path.
+pub fn from_handoff(
+    tentacle_root: &std::path::Path,
+    sub_task_id: &str,
+    session_id: &str,
+    agent_type: &str,
+) -> std::io::Result<Option<WalkthroughDoc>> {
+    let path = tentacle_root.join("HANDOFF.md");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let body = std::fs::read_to_string(&path)?;
+    let title = body
+        .lines()
+        .find(|l| l.starts_with("# "))
+        .map(|l| l.trim_start_matches("# ").trim().to_string())
+        .unwrap_or_else(|| "HANDOFF".to_string());
+    let mut doc = new_draft(sub_task_id, session_id, agent_type, &title);
+
+    // Parse `## Heading\n... body ...` blocks into sections.
+    let mut current_title: Option<String> = None;
+    let mut current_body = String::new();
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            if let Some(t) = current_title.take() {
+                doc.sections
+                    .push(new_section(infer_section_type(&t), &t, current_body.trim()));
+                current_body.clear();
+            }
+            current_title = Some(rest.trim().to_string());
+        } else if line.starts_with("# ") {
+            // Top-level title — already used above.
+            continue;
+        } else if current_title.is_some() {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+    if let Some(t) = current_title {
+        doc.sections
+            .push(new_section(infer_section_type(&t), &t, current_body.trim()));
+    }
+    Ok(Some(doc))
+}
+
+fn infer_section_type(heading: &str) -> SectionType {
+    let lower = heading.to_lowercase();
+    if lower.contains("change") || lower.contains("改动") || lower.contains("diff") {
+        SectionType::Change
+    } else if lower.contains("test") || lower.contains("测试") {
+        SectionType::TestResult
+    } else if lower.contains("risk") || lower.contains("风险") {
+        SectionType::Risk
+    } else if lower.contains("screenshot") || lower.contains("截图") {
+        SectionType::Screenshot
+    } else {
+        SectionType::Summary
+    }
+}

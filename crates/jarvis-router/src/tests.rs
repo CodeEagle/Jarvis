@@ -165,6 +165,47 @@ fn jarvis_orchestrator_is_not_mentionable() {
 }
 
 #[test]
+fn parse_mention_emits_steer_mode_when_phrasing_is_directional() {
+    let r = mention::parse_mentions(
+        "@代码助手 记得保持 stream 接口不变",
+        &registry(),
+    );
+    assert_eq!(r.mention_mode, jarvis_core::mention::MentionMode::Steer);
+}
+
+#[test]
+fn parse_mention_stays_single_when_phrasing_is_a_fresh_task() {
+    let r = mention::parse_mentions("@代码助手 帮我重构 sync", &registry());
+    assert_eq!(r.mention_mode, jarvis_core::mention::MentionMode::Single);
+}
+
+#[test]
+fn match_agent_by_mention_resolves_aliases() {
+    let reg = registry();
+    let agent = agent_registry::match_agent_by_mention("代码", &reg).unwrap();
+    assert_eq!(agent.r#type, "coding");
+}
+
+#[test]
+fn match_agent_by_mention_returns_none_for_internal_agents() {
+    let reg = registry();
+    assert!(agent_registry::match_agent_by_mention("Jarvis", &reg).is_none());
+    assert!(agent_registry::match_agent_by_mention("核查助手", &reg).is_none());
+}
+
+#[test]
+fn get_mentionable_agents_excludes_internal_agents() {
+    let reg = registry();
+    let mentionable = agent_registry::get_mentionable_agents(&reg);
+    let names: Vec<&str> = mentionable.iter().map(|a| a.r#type.as_str()).collect();
+    assert!(names.contains(&"coding"));
+    assert!(names.contains(&"devops"));
+    assert!(!names.contains(&"orchestrator"));
+    assert!(!names.contains(&"verifier"));
+    assert!(!names.contains(&"memory"));
+}
+
+#[test]
 fn verifier_is_not_mentionable() {
     let r = mention::parse_mentions("@核查助手 验证一下", &registry());
     assert!(r.mentions[0].unresolved);
@@ -275,6 +316,65 @@ fn route_unresolved_mention_continues_normally() {
     assert!(diag.mention_warning.is_some());
     let warn = diag.mention_warning.unwrap();
     assert!(warn.contains("@代码助手") || warn.contains("@运维助手"));
+}
+
+#[test]
+fn route_emits_mention_unresolved_growth_event() {
+    // PRD §30.15.5: every unresolved @mention must surface as a
+    // `mention.unresolved` GrowthEvent so the engine can mine the
+    // accumulated set for new-agent demand.
+    let db = fresh_db();
+    let r = Router::new(db.clone());
+    r.route(RouterInput {
+        user_input: "@测试助手 帮我",
+        session_id_hint: Some("sess_x"),
+        running_agent_types: &[],
+    })
+    .unwrap();
+    let collector = jarvis_growth::Collector::new(db);
+    let events = collector
+        .list_events_for_event_type("mention.unresolved", 10)
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    let payload: serde_json::Value =
+        serde_json::from_str(&events[0].payload_json).unwrap();
+    assert_eq!(payload["raw_text"], "@测试助手");
+}
+
+#[test]
+fn route_emits_two_unresolved_events_for_two_unknown_mentions() {
+    let db = fresh_db();
+    let r = Router::new(db.clone());
+    r.route(RouterInput {
+        user_input: "@测试助手 @部署助手 帮我",
+        session_id_hint: None,
+        running_agent_types: &[],
+    })
+    .unwrap();
+    let collector = jarvis_growth::Collector::new(db);
+    let events = collector
+        .list_events_for_event_type("mention.unresolved", 10)
+        .unwrap();
+    assert_eq!(events.len(), 2);
+}
+
+#[test]
+fn route_steer_demoted_to_single_when_target_agent_not_running() {
+    // Parser flagged the input as Steer (single mention + steer
+    // phrasing), but no agent is currently running. Per PRD §5.3a
+    // we fall back to a normal Single dispatch with mention_override.
+    let db = fresh_db();
+    let r = Router::new(db);
+    let (decision, _) = r
+        .route(RouterInput {
+            user_input: "@代码助手 记得保持 stream 接口不变",
+            session_id_hint: None,
+            running_agent_types: &[], // nothing running → not a steer
+        })
+        .unwrap();
+    assert_eq!(decision.agent_type, "coding");
+    assert!(decision.mention_override);
+    assert!(decision.override_action.is_none());
 }
 
 #[test]
