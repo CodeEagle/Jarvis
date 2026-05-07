@@ -138,14 +138,87 @@ GET  /healthz
 
 ## 桌面端关键交互
 
-### 1. 全局唤起（Spotlight 风格）
+### 1. 全局唤起（Compact 态，语音优先）
 
-- 默认热键 `⌘ + Shift + J`，可在偏好里改。
-- 打开一个无 chrome 的 Composer 输入框，回车后 `POST /router/input`。
-- 收到 RouteDecision 后：
-  - 单 Agent + 高置信度 → 直接显示主回复，不打开主窗口。
-  - 多 Agent / Orchestrator 模式 → 打开主窗口，把协作面板渲染出来。
-  - clarification_needed → 输入框追加澄清提示，不关闭。
+桌面端有两种形态：**Compact**（语音优先的悬浮窗，最轻量入口）和
+**Expanded**（功能完整的主窗口，承载协作面板 / Memory / commands）。
+Compact 是默认；满足触发条件或用户主动展开时切到 Expanded。
+
+热键 `⌘ + Shift + J` 唤起 Compact，默认无 chrome 悬浮窗，最大宽
+720pt，停在屏幕上半 1/3 居中。AI 助手的本体是"对话"，所以 Compact
+默认就是语音——不该需要打字才能用它。
+
+#### 1.1 三个子状态（语音模式）
+
+```
+   Idle                       Listening                  Replying
+┌────────────┐            ┌────────────┐             ┌─────────────────┐
+│            │            │            │             │ 💻 coding       │
+│    🎙️      │ ─VAD start→│  ▁▃▆█▆▃▁  │ ─VAD stop→  │                 │
+│            │            │ "帮我..."   │  router→    │ 🔊 (speaking…)  │
+│            │            │            │  TTS→       │  ▁▂▁▃▂▁         │
+└────────────┘            └────────────┘             └─────────────────┘
+breathing mic            live waveform               TTS pulse + barge-in
+```
+
+- **Auto-VAD**：开口即录、停 600ms 即送 STT；长按麦克风图标改成
+  push-to-talk，办公室环境用
+- **Barge-in**：TTS 播放中检测到语音输入立刻打断当前回放，避免抢话
+- **Replying** 中显示最近一条文本预览（≤3 行），滚动消失，不喧宾夺主
+
+#### 1.2 文本兜底（无麦克风权限或用户偏好）
+
+首次启动若用户拒绝麦克风权限、或在偏好里关闭语音：
+
+```
+┌──────────────────────────────────────┐
+│ 💬 ____________________________  🎙️  │
+└──────────────────────────────────────┘
+   ↩ 发送 · ⌘↑ 展开 · 🎙️ 按住单次录入
+```
+
+文本输入框右侧的 🎙️ 按钮按住开始录、松开 STT 转文本填进输入框——
+权限被拒的用户失去 hands-free，但单次语音录入仍可用；权限完全没给
+则该按钮灰掉，hover 提示去 System Settings 启用。
+
+#### 1.3 何时自动展开主窗口
+
+Compact 默认不开主窗口；满足任一条件自动展开（保留 session 上下文）：
+
+- `RouteDecision.agent_type == "orchestrator"`（多 Agent 协作）
+- 任意 `ActivityCard.status == "waiting_user"`
+- 流式回复包含 artifact / walkthrough 引用
+- 语音输入里识别到 "打开窗口" / "show me" 等显式信号
+- 用户主动按 `⌘↑`
+
+主窗口和 Compact 是两个独立 `NSWindow`，共享同一个 `AppState`
+`ObservableObject`；`session_id` 不变，转场不丢上下文。`⌘↓` / `Esc`
+从 Expanded 收回 Compact。
+
+收到 RouteDecision 后的分发逻辑：
+
+- 单 Agent + 高置信度 → Compact 内直接 TTS 播报回复，不开窗
+- clarification_needed → Compact 内 TTS 播报澄清问题，等下一轮输入
+- 任一展开触发命中 → Expanded 主窗口接管，Compact 平滑收起
+
+#### 1.4 STT / TTS 技术栈
+
+| 层 | MVP（系统自带，零下载） | 长期可换（中文质量更好） |
+|---|---|---|
+| STT | `SFSpeechRecognizer` + `requiresOnDeviceRecognition = true`（macOS 13+） | `whisper.cpp` + `ggml-medium-zh` |
+| TTS | `AVSpeechSynthesizer` + Premium 中文嗓音（`Tingting / Lili`，首次启动引导下载） | Piper（自然度更好但要打包模型） |
+| VAD | `AVAudioEngine` + RMS 阈值 | webrtc-vad / Silero |
+
+所有 STT/TTS **一律本地推理**；不送任何音频到云端。`Info.plist`
+必须含 `NSMicrophoneUsageDescription` +
+`NSSpeechRecognitionUsageDescription`。首次拒绝后**永久走文本兜底**，
+不再弹窗骚扰。
+
+#### 1.5 隐私指示
+
+Mic hot（正在录音或 VAD 监听）时菜单栏图标加一颗红点，与 macOS
+系统麦克风指示灯保持一致。Idle 状态没有任何音频采集——VAD 只在
+用户唤起 Compact 后才启动。
 
 ### 2. 协作面板渲染
 
