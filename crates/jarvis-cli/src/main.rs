@@ -227,6 +227,51 @@ async fn main() -> anyhow::Result<()> {
                 _ => println!("Usage: verifier list <doc_id> | verifier status <doc_id>"),
             }
         }
+        Some("commands") => {
+            let sub = args.get(2).map(String::as_str);
+            match sub {
+                Some("list") | None => {
+                    if json_mode {
+                        println!("{}", jarvis_cli::cmd_commands_list_json()?);
+                    } else {
+                        for line in jarvis_cli::cmd_commands_list()? {
+                            println!("{line}");
+                        }
+                    }
+                }
+                Some("run") => {
+                    let cmd_id = args.get(3).cloned().unwrap_or_default();
+                    let sess = args.get(4).cloned().unwrap_or_default();
+                    let actor = args
+                        .get(5)
+                        .cloned()
+                        .unwrap_or_else(|| "user_button".into());
+                    println!(
+                        "{}",
+                        jarvis_cli::cmd_commands_run(&db, &cmd_id, &sess, &actor)?
+                    );
+                }
+                Some("status") => {
+                    let id = args.get(3).cloned().unwrap_or_default();
+                    println!("{}", jarvis_cli::cmd_commands_status(&db, &id)?);
+                }
+                Some("recent") => {
+                    let sess = args.get(3).cloned();
+                    let limit = args
+                        .get(4)
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(20usize);
+                    for line in jarvis_cli::cmd_commands_recent(
+                        &db,
+                        sess.as_deref(),
+                        limit,
+                    )? {
+                        println!("{line}");
+                    }
+                }
+                Some(other) => anyhow::bail!("unknown commands subcommand: {other}"),
+            }
+        }
         Some("regression") => {
             let sub = args.get(2).map(String::as_str);
             match sub {
@@ -929,6 +974,18 @@ jarvis regression <subcommand>
   latest                   Show the most recent RegressionReport.
   list [limit]             List recent reports (default 20).
 ",
+        "commands" => "\
+jarvis commands <subcommand>
+
+  list [--json]                       Show built-in command catalogue (PRD §8.17).
+  run <command_id> <session_id> [by]  Begin executing; persists CommandExecution.
+  status <execution_id>               Print current execution + step states.
+  recent [session_id] [limit]         Recent executions, newest first.
+
+  Note: `run` records the execution row; concrete step processing is
+  driven by the sub-task dispatcher / parallel-explore runtime once
+  those land. Use `status` to poll progress.
+",
         "skills" => "\
 jarvis skills [--json]
 
@@ -1025,6 +1082,12 @@ Verification & Regression:
   jarvis verifier status <doc_id>      show verification + approval status
   jarvis regression latest             show most recent regression report
   jarvis regression list [limit]       list regression reports, newest first
+
+Commands (PRD §8.17 quick-actions):
+  jarvis commands list [--json]        show built-in command catalogue
+  jarvis commands run <id> <sess>      begin execution
+  jarvis commands status <exec_id>     print execution + step states
+  jarvis commands recent [sess] [n]    recent executions
 
 Provider:
   jarvis judge probe                   verify selected JARVIS_JUDGE adapter is live

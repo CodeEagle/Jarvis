@@ -297,6 +297,43 @@ impl CommandRunner {
         })
     }
 
+    /// List the most recent executions, newest first. When
+    /// `session_id` is `Some`, only that session's rows are returned.
+    pub fn list_recent(
+        &self,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> DbResult<Vec<CommandExecution>> {
+        self.db.with(|conn| {
+            if let Some(sid) = session_id {
+                let mut stmt = conn.prepare(
+                    "SELECT id, session_id, command_id, command_label, status,
+                            triggered_by, steps_json, started_at, completed_at
+                       FROM command_executions
+                      WHERE session_id = ?1
+                      ORDER BY started_at DESC
+                      LIMIT ?2",
+                )?;
+                let rows: Vec<CommandExecution> = stmt
+                    .query_map(params![sid, limit as i64], parse_exec)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            } else {
+                let mut stmt = conn.prepare(
+                    "SELECT id, session_id, command_id, command_label, status,
+                            triggered_by, steps_json, started_at, completed_at
+                       FROM command_executions
+                      ORDER BY started_at DESC
+                      LIMIT ?1",
+                )?;
+                let rows: Vec<CommandExecution> = stmt
+                    .query_map(params![limit as i64], parse_exec)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            }
+        })
+    }
+
     fn persist(&self, exec: &CommandExecution) -> DbResult<()> {
         self.db.with(|conn| {
             conn.execute(

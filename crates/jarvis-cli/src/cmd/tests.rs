@@ -209,6 +209,101 @@ fn cmd_regression_list_when_empty() {
     assert!(lines.is_empty());
 }
 
+#[test]
+fn cmd_commands_list_returns_default_catalogue() {
+    let lines = cmd_commands_list().unwrap();
+    assert!(!lines.is_empty(), "default catalogue must have rows");
+    let ids: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    // PRD §8.17.2 default ids
+    assert!(ids.iter().any(|i| *i == "sync_and_resolve"));
+    assert!(ids.iter().any(|i| *i == "regression_check"));
+    assert!(ids.iter().any(|i| *i == "parallel_explore"));
+}
+
+#[test]
+fn cmd_commands_list_json_round_trip() {
+    let json = cmd_commands_list_json().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let arr = v.as_array().unwrap();
+    assert!(arr.iter().any(|c| c["id"] == "regression_check"));
+}
+
+#[test]
+fn cmd_commands_run_creates_execution_row() {
+    let db = fresh_db();
+    seed_session(&db, "sess_cmd");
+    let line = cmd_commands_run(&db, "sync_and_resolve", "sess_cmd", "user_button").unwrap();
+    assert!(line.starts_with("cmd_"));
+    assert!(line.contains("status=running"));
+    assert!(line.contains("steps_pending=3")); // 3 steps in default catalogue
+}
+
+#[test]
+fn cmd_commands_run_unknown_command_id_errors() {
+    let db = fresh_db();
+    seed_session(&db, "sess_cmd");
+    let err = cmd_commands_run(&db, "no_such_command", "sess_cmd", "user").unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.to_lowercase().contains("command") || msg.contains("not"));
+}
+
+#[test]
+fn cmd_commands_run_rejects_empty_args() {
+    let db = fresh_db();
+    let err1 = cmd_commands_run(&db, "  ", "sess_x", "user").unwrap_err();
+    matches!(err1, CmdError::MissingArg(_))
+        .then_some(())
+        .expect("expected MissingArg for command_id");
+    let err2 = cmd_commands_run(&db, "sync_and_resolve", "  ", "user").unwrap_err();
+    matches!(err2, CmdError::MissingArg(_))
+        .then_some(())
+        .expect("expected MissingArg for session_id");
+}
+
+#[test]
+fn cmd_commands_status_round_trip() {
+    let db = fresh_db();
+    seed_session(&db, "sess_cmd");
+    let line = cmd_commands_run(&db, "sync_and_resolve", "sess_cmd", "user").unwrap();
+    let id = line.split_whitespace().next().unwrap();
+    let status_out = cmd_commands_status(&db, id).unwrap();
+    assert!(status_out.contains("status=running"));
+    assert!(status_out.contains("step 0"));
+    assert!(status_out.contains("agent=devops"));
+}
+
+#[test]
+fn cmd_commands_status_unknown_errors() {
+    let db = fresh_db();
+    let err = cmd_commands_status(&db, "cmd_nope").unwrap_err();
+    assert!(err.to_string().contains("not found"));
+}
+
+#[test]
+fn cmd_commands_recent_lists_executions_newest_first() {
+    let db = fresh_db();
+    seed_session(&db, "sess_a");
+    seed_session(&db, "sess_b");
+    cmd_commands_run(&db, "sync_and_resolve", "sess_a", "user").unwrap();
+    cmd_commands_run(&db, "regression_check", "sess_b", "user").unwrap();
+    cmd_commands_run(&db, "unblock_agent", "sess_a", "user").unwrap();
+
+    // No filter — all sessions.
+    let all = cmd_commands_recent(&db, None, 10).unwrap();
+    assert_eq!(all.len(), 3);
+    assert!(all[0].contains("unblock_agent")); // newest first
+
+    // Filter to one session.
+    let only_a = cmd_commands_recent(&db, Some("sess_a"), 10).unwrap();
+    assert_eq!(only_a.len(), 2);
+    for line in &only_a {
+        assert!(line.contains("session=sess_a"));
+    }
+}
+
 #[tokio::test]
 async fn cmd_judge_probe_reports_outcome_for_stub_judge() {
     struct OkJudge;

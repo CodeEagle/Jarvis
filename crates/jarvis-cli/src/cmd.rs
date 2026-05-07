@@ -717,6 +717,127 @@ pub fn cmd_regression_latest(db: &Db) -> Result<String, CmdError> {
     }
 }
 
+/// List the built-in command catalogue (PRD §8.17). Read-only — does
+/// not start anything.
+pub fn cmd_commands_list() -> Result<Vec<String>, CmdError> {
+    let catalogue = jarvis_orchestrator::commands::defaults();
+    Ok(catalogue
+        .commands
+        .iter()
+        .map(|c| {
+            let steps = c.steps.len();
+            format!(
+                "{}  {} {}  steps={}  parallel={}  approval={}  '{}'",
+                c.id,
+                c.icon,
+                c.label,
+                steps,
+                c.parallel,
+                c.require_approval,
+                render::truncate(&c.description, 50),
+            )
+        })
+        .collect())
+}
+
+pub fn cmd_commands_list_json() -> Result<String, CmdError> {
+    let catalogue = jarvis_orchestrator::commands::defaults();
+    serde_json::to_string_pretty(&catalogue.commands)
+        .map_err(|e| CmdError::Router(e.to_string()))
+}
+
+/// Begin executing a command. Records a CommandExecution row; actual
+/// step execution is driven by the sub-task dispatcher / parallel
+/// explore runtime once those land. This verb is the surface that
+/// future runtime hookups consume.
+pub fn cmd_commands_run(
+    db: &Db,
+    command_id: &str,
+    session_id: &str,
+    triggered_by: &str,
+) -> Result<String, CmdError> {
+    if command_id.trim().is_empty() {
+        return Err(CmdError::MissingArg("command id"));
+    }
+    if session_id.trim().is_empty() {
+        return Err(CmdError::MissingArg("session id"));
+    }
+    let runner = jarvis_orchestrator::commands::CommandRunner::new(
+        db.clone(),
+        jarvis_orchestrator::commands::defaults(),
+    );
+    let exec = runner
+        .start(session_id, command_id, triggered_by)
+        .map_err(|e| CmdError::Router(format!("commands run: {e}")))?;
+    Ok(format!(
+        "{}  command_id={}  session={}  status={}  steps_pending={}",
+        exec.id,
+        exec.command_id,
+        exec.session_id,
+        exec.status.as_str(),
+        exec.steps.len(),
+    ))
+}
+
+pub fn cmd_commands_status(
+    db: &Db,
+    execution_id: &str,
+) -> Result<String, CmdError> {
+    if execution_id.trim().is_empty() {
+        return Err(CmdError::MissingArg("execution id"));
+    }
+    let runner = jarvis_orchestrator::commands::CommandRunner::new(
+        db.clone(),
+        jarvis_orchestrator::commands::defaults(),
+    );
+    let exec = runner
+        .get(execution_id)?
+        .ok_or_else(|| CmdError::Router(format!("execution not found: {execution_id}")))?;
+    let mut out = format!(
+        "{}  command={}  session={}  status={}  started_at={}\n",
+        exec.id,
+        exec.command_id,
+        exec.session_id,
+        exec.status.as_str(),
+        exec.started_at.to_rfc3339(),
+    );
+    for step in &exec.steps {
+        out.push_str(&format!(
+            "  step {}  agent={}  status={}  '{}'\n",
+            step.index,
+            step.agent,
+            step.status.as_str(),
+            render::truncate(&step.instruction, 50),
+        ));
+    }
+    Ok(out.trim_end().to_string())
+}
+
+pub fn cmd_commands_recent(
+    db: &Db,
+    session_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<String>, CmdError> {
+    let runner = jarvis_orchestrator::commands::CommandRunner::new(
+        db.clone(),
+        jarvis_orchestrator::commands::defaults(),
+    );
+    let rows = runner.list_recent(session_id, limit)?;
+    Ok(rows
+        .into_iter()
+        .map(|e| {
+            format!(
+                "{}  {}  command={}  session={}  status={}",
+                e.id,
+                e.started_at.to_rfc3339(),
+                e.command_id,
+                e.session_id,
+                e.status.as_str(),
+            )
+        })
+        .collect())
+}
+
 pub fn cmd_regression_list(
     db: &Db,
     limit: usize,
