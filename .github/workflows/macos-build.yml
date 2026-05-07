@@ -1,0 +1,96 @@
+name: macos-build
+
+# Standalone macOS-only build that runs on every main push and on
+# manual dispatch. Produces signed-friendly arm64 + x86_64 binaries
+# as workflow artifacts so you can grab a fresh mac build any time
+# without tagging a release.
+#
+# release.yml still handles tag-driven publishing to GitHub Releases;
+# this is the always-on dev channel.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/macos-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14            # Apple Silicon (arm64)
+            target: aarch64-apple-darwin
+            archive: jarvis-aarch64-macos.tar.gz
+          - os: macos-13            # Intel (x86_64)
+            target: x86_64-apple-darwin
+            archive: jarvis-x86_64-macos.tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }} -p jarvis-cli
+
+      - name: Strip binary
+        run: strip target/${{ matrix.target }}/release/jarvis || true
+
+      - name: Smoke test
+        run: |
+          target/${{ matrix.target }}/release/jarvis --help | head -3
+          target/${{ matrix.target }}/release/jarvis route "openwrt 排错" | head -3
+
+      - name: Run scripts/smoke.sh acceptance check
+        run: |
+          chmod +x scripts/smoke.sh
+          JARVIS_BIN=target/${{ matrix.target }}/release/jarvis bash scripts/smoke.sh
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse --short HEAD)
+          VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2 || echo dev)
+          ARCHIVE="jarvis-${VERSION}-${SHA}-${{ matrix.target }}.tar.gz"
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/jarvis dist/jarvis
+          cp README.md dist/README.md
+          cp scripts/smoke.sh dist/smoke.sh
+          cp scripts/install.sh dist/install.sh
+          chmod +x dist/smoke.sh dist/install.sh
+          cp -r docs/qa/v1.8 dist/QA-EVIDENCE 2>/dev/null || true
+          cp docs/prd/v1.9-context-handoff.md dist/v1.9-PRD.md 2>/dev/null || true
+          tar -C dist -czf "$ARCHIVE" . 2>/dev/null
+          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          ls -la "$ARCHIVE"*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.archive }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 30

@@ -94,34 +94,43 @@ are either implemented or have a concrete extension seam:
 
 ## Install
 
-### Option A — Pre-built binary (recommended)
-
-Grab the latest release for your OS:
+### Option A — One-line installer (recommended)
 
 ```bash
-# Linux x86_64
-curl -L -o jarvis.tar.gz \
-  https://github.com/CodeEagle/Jarvis/releases/latest/download/jarvis-VERSION-x86_64-linux.tar.gz
+curl -fsSL https://raw.githubusercontent.com/CodeEagle/Jarvis/main/scripts/install.sh | bash
+```
 
-# macOS Apple Silicon
-curl -L -o jarvis.tar.gz \
-  https://github.com/CodeEagle/Jarvis/releases/latest/download/jarvis-VERSION-aarch64-macos.tar.gz
+Auto-detects platform (Linux x86_64, macOS arm64, macOS x86_64),
+downloads the matching release tarball if available, falls back to
+`cargo build` from `main` HEAD if no release exists for your target
+yet. Verifies SHA256, installs to `~/.local/bin/jarvis`. Use
+`JARVIS_INSTALL_DIR=…` to override.
 
-# macOS Intel
-curl -L -o jarvis.tar.gz \
-  https://github.com/CodeEagle/Jarvis/releases/latest/download/jarvis-VERSION-x86_64-macos.tar.gz
+### Option B — Manual download
 
-tar -xzf jarvis.tar.gz
+Grab the asset that matches your platform from
+[Releases](https://github.com/CodeEagle/Jarvis/releases) and:
+
+```bash
+tar -xzf jarvis-vX.Y.Z-<target>.tar.gz
 chmod +x jarvis
-sudo mv jarvis /usr/local/bin/      # optional, or just add to PATH
+mv jarvis ~/.local/bin/        # or any PATH dir
 jarvis --help
 ```
 
-Replace `VERSION` with the tag (e.g. `v0.1.0`). Each archive ships
-`jarvis` + the QA evidence directory. Each release also publishes
-`<archive>.sha256` you can verify with `shasum -a 256 -c <file>.sha256`.
+### Option C — Fresh macOS dev build
 
-### Option B — Build from source
+The `macos-build` workflow runs on every push to `main` and uploads
+arm64 + x86_64 binaries as workflow artifacts (30-day retention). To
+grab one without waiting for a tagged release:
+
+1. Go to **Actions → macos-build** on GitHub
+2. Click the latest green run
+3. Download `jarvis-…-aarch64-apple-darwin.tar.gz`
+   (or `…-x86_64-apple-darwin.tar.gz` for Intel)
+4. `tar -xzf …; chmod +x jarvis; ./jarvis --help`
+
+### Option D — Build from source
 
 ```bash
 git clone https://github.com/CodeEagle/Jarvis.git
