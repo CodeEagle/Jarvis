@@ -372,6 +372,124 @@ fn cmd_memory_write_rejects_empty_content() {
 }
 
 #[test]
+fn cmd_memory_list_json_emits_valid_array() {
+    let db = fresh_db();
+    cmd_memory_write(&db, "用户偏好 vim", "global").unwrap();
+    cmd_memory_write(&db, "Mirage 项目用 Riverpod", "global").unwrap();
+    let out = cmd_memory_list_json(&db, "global").unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    for item in arr {
+        assert!(item["id"].as_str().unwrap().starts_with("mem_"));
+        assert!(item["type"].as_str().is_some());
+        assert!(item["trust_now"].as_f64().is_some());
+        assert!(item["tier"].as_i64().is_some());
+    }
+}
+
+#[test]
+fn cmd_memory_search_json_includes_score_breakdown() {
+    let db = fresh_db();
+    cmd_memory_write(&db, "用户偏好 vim", "global").unwrap();
+    let out = cmd_memory_search_json(&db, "global", "vim", 5).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert!(arr[0]["hybrid_score"].as_f64().is_some());
+    assert!(arr[0]["fts"].as_f64().is_some());
+    assert!(arr[0]["jaccard"].as_f64().is_some());
+    assert!(arr[0]["vector"].as_f64().is_some());
+}
+
+#[test]
+fn cmd_sessions_list_json_emits_required_fields() {
+    let db = fresh_db();
+    seed_session(&db, "sess_a");
+    let out = cmd_sessions_list_json(&db).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    let s = &arr[0];
+    assert_eq!(s["id"], "sess_a");
+    assert!(s["title"].as_str().is_some());
+    assert!(s["domain"].as_str().is_some());
+    assert!(s["status"].as_str().is_some());
+    assert!(s["last_active_at"].as_str().is_some());
+}
+
+#[test]
+fn cmd_raw_log_json_serialises_seq_and_timestamps() {
+    let db = fresh_db();
+    seed_session(&db, "sess_log");
+    jarvis_db::raw_event_log::append(
+        &db,
+        jarvis_db::raw_event_log::AppendEvent {
+            event_type: jarvis_db::RawEventKind::UserMessage,
+            session_id: Some("sess_log"),
+            trace_id: Some("trc"),
+            agent_id: None,
+            raw_content: "hello",
+            safe_content: None,
+        },
+    )
+    .unwrap();
+    let out = cmd_raw_log_json(&db, "sess_log", 10).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["raw_content"], "hello");
+    assert!(arr[0]["seq"].as_i64().is_some());
+    assert!(arr[0]["ts"].as_str().is_some());
+}
+
+#[test]
+fn cmd_audit_json_serialises_actor_and_status() {
+    let db = fresh_db();
+    jarvis_db::audit_log::append(
+        &db,
+        jarvis_db::audit_log::AppendAudit {
+            trace_id: None,
+            session_id: Some("sess_a"),
+            task_id: None,
+            actor: "tool_runtime",
+            action: "tool.call",
+            target: Some("read_file"),
+            status: jarvis_db::audit_log::AuditStatus::Success,
+            input_summary: None,
+            output_summary: Some("ok"),
+            before_hash: None,
+            after_hash: None,
+            data_json: None,
+        },
+    )
+    .unwrap();
+    let out = cmd_audit_json(&db, "sess_a", 10).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["actor"], "tool_runtime");
+    assert_eq!(arr[0]["status"], "success");
+}
+
+#[test]
+fn cmd_skills_list_json_emits_status_and_counts() {
+    let db = fresh_db();
+    let reg = jarvis_growth::SkillRegistry::new(db.clone());
+    let mut skill = jarvis_growth::skill::new_skill("diagnose", "x");
+    skill.success_count = 5;
+    skill.failure_count = 0;
+    skill.status = jarvis_growth::SkillStatus::Promoted;
+    reg.upsert(&skill).unwrap();
+    let out = cmd_skills_list_json(&db).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["status"], "promoted");
+    assert_eq!(arr[0]["success_count"], 5);
+}
+
+#[test]
 fn cmd_raw_log_returns_session_events() {
     let db = fresh_db();
     seed_session(&db, "sess_cli");

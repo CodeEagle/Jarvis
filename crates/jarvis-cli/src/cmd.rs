@@ -144,6 +144,24 @@ pub fn cmd_memory_list(db: &Db, scope: &str) -> Result<Vec<String>, CmdError> {
         .collect())
 }
 
+pub fn cmd_memory_list_json(db: &Db, scope: &str) -> Result<String, CmdError> {
+    let r = jarvis_memory::Retrieval::new(db.clone());
+    let results = r.retrieve(scope, "", None, 100, 0.0)?;
+    let payload: Vec<serde_json::Value> = results
+        .into_iter()
+        .map(|h| {
+            serde_json::json!({
+                "id": h.memory.id,
+                "type": h.memory.r#type.as_str(),
+                "content": h.memory.content,
+                "trust_now": h.trust_now,
+                "tier": h.memory.tier,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&payload).map_err(|e| CmdError::Router(e.to_string()))
+}
+
 pub fn cmd_memory_search(
     db: &Db,
     scope: &str,
@@ -168,6 +186,35 @@ pub fn cmd_memory_search(
             )
         })
         .collect())
+}
+
+pub fn cmd_memory_search_json(
+    db: &Db,
+    scope: &str,
+    query: &str,
+    top_k: usize,
+) -> Result<String, CmdError> {
+    if query.trim().is_empty() {
+        return Err(CmdError::MissingArg("memory search query"));
+    }
+    let r = jarvis_memory::Retrieval::new(db.clone());
+    let hits = r.retrieve(scope, query, None, top_k, 0.0)?;
+    let payload: Vec<serde_json::Value> = hits
+        .into_iter()
+        .map(|h| {
+            serde_json::json!({
+                "id": h.memory.id,
+                "type": h.memory.r#type.as_str(),
+                "content": h.memory.content,
+                "hybrid_score": h.hybrid_score,
+                "trust_now": h.trust_now,
+                "fts": h.fts,
+                "vector": h.vector,
+                "jaccard": h.jaccard,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&payload).map_err(|e| CmdError::Router(e.to_string()))
 }
 
 /// Mark a memory as `Deprecated` and emit a Deprecated entry in
@@ -214,6 +261,32 @@ pub fn cmd_raw_log(db: &Db, session_id: &str, limit: usize) -> Result<Vec<String
         .collect())
 }
 
+pub fn cmd_raw_log_json(
+    db: &Db,
+    session_id: &str,
+    limit: usize,
+) -> Result<String, CmdError> {
+    if session_id.is_empty() {
+        return Err(CmdError::MissingArg("session id"));
+    }
+    let rows = jarvis_db::raw_event_log::list_for_session(db, session_id, limit)?;
+    let payload: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "seq": r.seq,
+                "ts": r.ts.to_rfc3339(),
+                "event_type": r.event_type,
+                "trace_id": r.trace_id,
+                "agent_id": r.agent_id,
+                "raw_content": r.raw_content,
+                "safe_content": r.safe_content,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&payload).map_err(|e| CmdError::Router(e.to_string()))
+}
+
 pub fn cmd_audit(db: &Db, session_id: &str, limit: usize) -> Result<Vec<String>, CmdError> {
     if session_id.is_empty() {
         return Err(CmdError::MissingArg("session id"));
@@ -232,6 +305,32 @@ pub fn cmd_audit(db: &Db, session_id: &str, limit: usize) -> Result<Vec<String>,
             )
         })
         .collect())
+}
+
+pub fn cmd_audit_json(
+    db: &Db,
+    session_id: &str,
+    limit: usize,
+) -> Result<String, CmdError> {
+    if session_id.is_empty() {
+        return Err(CmdError::MissingArg("session id"));
+    }
+    let rows = jarvis_db::audit_log::list_for_session(db, session_id, limit)?;
+    let payload: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|e| {
+            serde_json::json!({
+                "ts": e.ts.to_rfc3339(),
+                "actor": e.actor,
+                "action": e.action,
+                "target": e.target,
+                "status": e.status.as_str(),
+                "output_summary": e.output_summary,
+                "trace_id": e.trace_id,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&payload).map_err(|e| CmdError::Router(e.to_string()))
 }
 
 pub fn cmd_trace_view(db: &Db, trace_id: &str) -> Result<Vec<String>, CmdError> {
@@ -403,6 +502,25 @@ pub fn cmd_sessions_list(db: &Db) -> Result<Vec<String>, CmdError> {
         .collect())
 }
 
+pub fn cmd_sessions_list_json(db: &Db) -> Result<String, CmdError> {
+    let sessions = jarvis_db::session_repo::list_recent(db, 50)?;
+    let payload: Vec<serde_json::Value> = sessions
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "title": s.title,
+                "domain": s.domain,
+                "topic": s.topic,
+                "status": s.status.as_str(),
+                "last_active_at": s.last_active_at.to_rfc3339(),
+                "created_at": s.created_at.to_rfc3339(),
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&payload).map_err(|e| CmdError::Router(e.to_string()))
+}
+
 pub fn cmd_session_messages(
     db: &Db,
     session_id: &str,
@@ -447,6 +565,26 @@ pub fn cmd_skills_list(db: &Db) -> Result<Vec<String>, CmdError> {
             )
         })
         .collect())
+}
+
+pub fn cmd_skills_list_json(db: &Db) -> Result<String, CmdError> {
+    let reg = jarvis_growth::SkillRegistry::new(db.clone());
+    let skills = reg.list()?;
+    let payload: Vec<serde_json::Value> = skills
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "name": s.name,
+                "status": s.status.as_str(),
+                "success_count": s.success_count,
+                "failure_count": s.failure_count,
+                "version": s.version,
+                "trigger_intents": s.trigger_intents,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&payload).map_err(|e| CmdError::Router(e.to_string()))
 }
 
 pub fn cmd_walkthrough_list(

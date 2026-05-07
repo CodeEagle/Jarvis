@@ -28,6 +28,23 @@ async fn main() -> anyhow::Result<()> {
     let json_mode = args.iter().any(|a| a == "--json");
     let args: Vec<String> = args.into_iter().filter(|a| a != "--json").collect();
 
+    // Per-subcommand --help / -h: matches `jarvis <sub> --help` (or -h)
+    // anywhere after the subcommand. Prints subcommand-specific help and
+    // returns 0 without touching the DB. The top-level `--help` /
+    // `jarvis help` still routes through print_usage() below.
+    if let Some(sub) = args.get(1) {
+        let asks_help = args
+            .iter()
+            .skip(2)
+            .any(|a| a == "--help" || a == "-h");
+        if asks_help {
+            if let Some(text) = subcommand_help(sub) {
+                println!("{text}");
+                return Ok(());
+            }
+        }
+    }
+
     match args.get(1).map(String::as_str) {
         Some("route") => {
             let input = args
@@ -46,11 +63,15 @@ async fn main() -> anyhow::Result<()> {
             println!("{pretty}");
         }
         Some("chat") => chat_repl(db).await?,
-        Some("memory") => memory_command(db, &args[2..])?,
+        Some("memory") => memory_command(db, &args[2..], json_mode)?,
         Some("raw-log") => {
             let session = args.get(2).cloned().unwrap_or_default();
-            for line in jarvis_cli::cmd_raw_log(&db, &session, 100)? {
-                println!("{line}");
+            if json_mode {
+                println!("{}", jarvis_cli::cmd_raw_log_json(&db, &session, 100)?);
+            } else {
+                for line in jarvis_cli::cmd_raw_log(&db, &session, 100)? {
+                    println!("{line}");
+                }
             }
         }
         Some("growth") => growth_command(db, &args[2..])?,
@@ -58,8 +79,12 @@ async fn main() -> anyhow::Result<()> {
         Some("replay") => replay_command(db, &args[2..])?,
         Some("audit") => {
             let session = args.get(2).cloned().unwrap_or_default();
-            for line in jarvis_cli::cmd_audit(&db, &session, 100)? {
-                println!("{line}");
+            if json_mode {
+                println!("{}", jarvis_cli::cmd_audit_json(&db, &session, 100)?);
+            } else {
+                for line in jarvis_cli::cmd_audit(&db, &session, 100)? {
+                    println!("{line}");
+                }
             }
         }
         Some("trace-view") => {
@@ -85,8 +110,12 @@ async fn main() -> anyhow::Result<()> {
             let sub = args.get(2).map(String::as_str);
             match sub {
                 Some("list") | None => {
-                    for line in jarvis_cli::cmd_sessions_list(&db)? {
-                        println!("{line}");
+                    if json_mode {
+                        println!("{}", jarvis_cli::cmd_sessions_list_json(&db)?);
+                    } else {
+                        for line in jarvis_cli::cmd_sessions_list(&db)? {
+                            println!("{line}");
+                        }
                     }
                 }
                 Some("messages") => {
@@ -139,8 +168,12 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Some("skills") => {
-            for line in jarvis_cli::cmd_skills_list(&db)? {
-                println!("{line}");
+            if json_mode {
+                println!("{}", jarvis_cli::cmd_skills_list_json(&db)?);
+            } else {
+                for line in jarvis_cli::cmd_skills_list(&db)? {
+                    println!("{line}");
+                }
             }
         }
         Some("walkthrough") => {
@@ -313,7 +346,7 @@ async fn chat_repl(db: Db) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn memory_command(db: Db, args: &[String]) -> anyhow::Result<()> {
+fn memory_command(db: Db, args: &[String], json_mode: bool) -> anyhow::Result<()> {
     match args.first().map(String::as_str) {
         Some("write") => {
             let content = args
@@ -325,8 +358,12 @@ fn memory_command(db: Db, args: &[String]) -> anyhow::Result<()> {
             println!("{}", jarvis_cli::cmd_memory_write(&db, &content, "global")?);
         }
         Some("list") => {
-            for line in jarvis_cli::cmd_memory_list(&db, "global")? {
-                println!("{line}");
+            if json_mode {
+                println!("{}", jarvis_cli::cmd_memory_list_json(&db, "global")?);
+            } else {
+                for line in jarvis_cli::cmd_memory_list(&db, "global")? {
+                    println!("{line}");
+                }
             }
             return Ok(());
         }
@@ -337,8 +374,12 @@ fn memory_command(db: Db, args: &[String]) -> anyhow::Result<()> {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(" ");
-            for line in jarvis_cli::cmd_memory_search(&db, "global", &query, 20)? {
-                println!("{line}");
+            if json_mode {
+                println!("{}", jarvis_cli::cmd_memory_search_json(&db, "global", &query, 20)?);
+            } else {
+                for line in jarvis_cli::cmd_memory_search(&db, "global", &query, 20)? {
+                    println!("{line}");
+                }
             }
         }
         Some("forget") => {
@@ -762,6 +803,178 @@ async fn maintenance_command(db: Db, args: &[String]) -> anyhow::Result<()> {
         cluster.clusters_created, cluster.members_absorbed
     );
     Ok(())
+}
+
+/// Per-subcommand help text. Returns None when no specific help is
+/// registered (caller falls through to top-level usage / dispatch).
+/// Centralised so adding a subcommand only touches one match arm.
+fn subcommand_help(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "route" => "\
+jarvis route <input> [--json]
+
+  Run the Router on <input> and print the RouteDecision.
+
+  Args:
+    <input>           User input string. Default: \"帮我看个 OpenWrt 的报错\".
+
+  Flags:
+    --json            Pretty-printed JSON (default: pretty JSON anyway).
+    --help, -h        Show this help.
+
+  Env:
+    JARVIS_JUDGE=codex      Use the codex LLM judge instead of rule-only.
+    CODEX_BINARY=/path      Override codex binary path.
+    CODEX_MODEL=<id>        Override codex model.
+    CODEX_TIMEOUT_SECS=<n>  Override codex per-call timeout.
+
+  Examples:
+    jarvis route \"openwrt 编译报错\"
+    JARVIS_JUDGE=codex jarvis route \"@代码助手 重构 sync\"
+",
+        "chat" => "\
+jarvis chat
+
+  Interactive REPL. Reads stdin, routes each line, prints decision.
+  Type :quit to exit.
+
+  Env:
+    JARVIS_JUDGE=codex          Route via codex LLM judge.
+    JARVIS_FALLBACK_SECS=<n>    Override fallback SLA (default 180s with judge).
+",
+        "memory" => "\
+jarvis memory <subcommand>
+
+  write <text>          Record a user-explicit preference memory.
+  list [--json]         List approved memories in scope `global`.
+  search <q> [--json]   Hybrid retrieval; prints score + id per row.
+  forget <id> [reason]  Deprecate a memory; audit-logged in memory_change_log.
+",
+        "memory-history" => "\
+jarvis memory-history <mem_id>
+
+  Dump the full memory_change_log chain for one memory.
+  Useful for debugging Dream / inference / user-correction history.
+",
+        "sessions" => "\
+jarvis sessions <subcommand>
+
+  list [--json]                List active sessions.
+  new <title> [domain]         Create a new active session (default domain=general).
+  archive <id>                 Move session to status=archived (idempotent).
+  messages <sess>              Recent messages for a session.
+
+  --json on `list` prints a JSON array with id/title/domain/last_active.
+",
+        "activity-cards" => "\
+jarvis activity-cards <session_id>
+
+  List ActivityCard rows for a session — the data layer behind the
+  multi-Agent collaboration panel (PRD §8.13).
+",
+        "persona" => "\
+jarvis persona <subcommand> [--scope <name>]
+
+  get          Print persona content_json + updated_at.
+  set <body>   Upsert persona; <body> can be raw JSON or plain text
+               (plain text is wrapped as a JSON string).
+
+  --scope defaults to `global`.
+",
+        "raw-log" => "\
+jarvis raw-log <session_id> [--json]
+
+  Dump the immutable raw_event_log entries for a session, oldest first.
+",
+        "audit" => "\
+jarvis audit <session_id> [--json]
+
+  List audit_log rows for a session.
+",
+        "trace" => "\
+jarvis trace <trace_id>
+
+  Print raw_event_log rows that share <trace_id>.
+",
+        "trace-view" => "\
+jarvis trace-view <trace_id>
+
+  Pretty-print trace events + correlated audit rows. Best for
+  debugging a single user→agent→tool round-trip.
+",
+        "replay" => "\
+jarvis replay <session_id> [iso8601]
+
+  Reconstruct a session's state at a point in time using the latest
+  session_snapshot ≤ ts plus subsequent raw_event_log rows.
+",
+        "walkthrough" => "\
+jarvis walkthrough <subcommand>
+
+  list <session_id>                       List walkthroughs in a session.
+  approve <doc_id> [actor]                Manually approve a walkthrough.
+  reject <doc_id> [actor] [reason]        Manually reject with reason.
+",
+        "verifier" => "\
+jarvis verifier <subcommand>
+
+  list <doc_id>     List saved VerifierCheck rows for a walkthrough.
+  status <doc_id>   Show verification + approval state.
+
+  Read-only. Re-running checks needs a populated worker driver.
+",
+        "regression" => "\
+jarvis regression <subcommand>
+
+  latest                   Show the most recent RegressionReport.
+  list [limit]             List recent reports (default 20).
+",
+        "skills" => "\
+jarvis skills [--json]
+
+  List skills in the SkillRegistry, newest first.
+",
+        "outbox" => "\
+jarvis outbox
+
+  Show the pending row count of the replication outbox.
+",
+        "growth" => "\
+jarvis growth <subcommand>
+
+  events [type]                       List growth events (default route_decision).
+  artifacts                           List growth artifacts.
+  filter <type> [status]              Filter artifacts by type and optional status.
+",
+        "dashboard" => "\
+jarvis dashboard [--json]
+
+  active_sessions / raw_events / memories / pending_outbox counters.
+",
+        "judge" => "\
+jarvis judge probe
+
+  Run a one-shot canned input through the selected JARVIS_JUDGE adapter
+  to verify auth + binary + network. Use to triage silent fallbacks.
+",
+        "maintenance" => "\
+jarvis maintenance [scope]
+
+  Run Dream lint + cluster once for `scope` (default global).
+",
+        "serve" => "\
+jarvis serve [host:port]
+
+  Start the HTTP API server (default 127.0.0.1:7777).
+",
+        "demo" => "\
+jarvis demo
+
+  One-shot end-to-end smoke: write a memory, route an input, dispatch
+  a sub-task, run Dream lint, dump dashboard counters.
+",
+        _ => return None,
+    })
 }
 
 fn print_usage() {
