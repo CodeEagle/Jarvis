@@ -7,27 +7,47 @@ bar, and Memory browser ship in m2–m4. Architectural plan lives in
 [`docs/macos-desktop.md`](../../docs/macos-desktop.md); the visual
 system in [`docs/design/macos-visual.md`](../../docs/design/macos-visual.md).
 
-## Try it (no Mac dev environment needed)
+## One-liner install (recommended)
 
-The app is built unsigned by GitHub Actions on every push. To grab a
-fresh build:
+```sh
+curl -fsSL https://raw.githubusercontent.com/CodeEagle/Jarvis/main/scripts/install-mac-app.sh | bash
+```
 
-1. Open the repo's **Actions** tab → workflow **macos-app**
-2. Pick the latest successful run on `main` (or the
-   `claude/router-rule-layer-yCIVE` branch)
-3. Scroll to **Artifacts**, download `JarvisMac-<sha>.zip`
-4. Unzip → you'll have `Jarvis.app`
+Pulls the latest `nightly` build, drops `Jarvis.app` into
+`/Applications` (or `~/Applications` if the former isn't writable),
+strips the Gatekeeper quarantine, and launches it. Env overrides:
 
-### Bypass the Gatekeeper warning (one-time)
+| var | default | meaning |
+|---|---|---|
+| `JARVIS_RELEASE_TAG` | `nightly` | release tag to pull from |
+| `JARVIS_APP_INSTALL_DIR` | `/Applications` | install location |
+| `JARVIS_LAUNCH_AFTER_INSTALL` | `1` | set to `0` to skip auto-open |
+
+## Manual install (if you'd rather inspect first)
+
+The app is built unsigned by the `macos-app` GitHub Actions workflow
+on every push. Two ways to grab the .app:
+
+**Stable URL** — every successful main build also publishes to a
+rolling `nightly` GitHub Release:
+<https://github.com/CodeEagle/Jarvis/releases/tag/nightly>
+
+**Per-commit artifact** — for a specific feature-branch build,
+**Actions** tab → run → Artifacts → `JarvisMac-<sha>.zip` (requires
+GitHub auth).
+
+### Bypass Gatekeeper (one-time)
 
 Because the build isn't code-signed, macOS will refuse to open the
 app on first launch ("Jarvis.app is damaged and can't be opened").
 Strip the quarantine attribute once:
 
 ```sh
-xattr -dr com.apple.quarantine ~/Downloads/Jarvis.app
-open ~/Downloads/Jarvis.app
+xattr -dr com.apple.quarantine /Applications/Jarvis.app
+open /Applications/Jarvis.app
 ```
+
+(The one-liner installer does this for you.)
 
 ### Daemon (auto-managed, no terminal required)
 

@@ -22,7 +22,8 @@ on:
       - 'Cargo.lock'
 
 permissions:
-  contents: read
+  contents: write   # required for softprops/action-gh-release on the
+                    # `nightly` tag
 
 jobs:
   build:
@@ -136,3 +137,36 @@ jobs:
           path: ${{ github.workspace }}/JarvisMac.zip
           retention-days: 30
           if-no-files-found: error
+
+      # ── Publish to a rolling `nightly` GitHub Release ─────────────
+      # So `scripts/install-mac-app.sh` can curl-pipe-bash from a
+      # stable public URL. Triggered only on main push or manual
+      # workflow_dispatch — feature-branch pushes upload as workflow
+      # artifacts only (above).
+      - name: Publish to nightly release
+        if: |
+          (github.event_name == 'push' && github.ref == 'refs/heads/main')
+          || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Jarvis macOS — nightly
+          body: |
+            Automated build from `${{ github.sha }}` on `${{ github.ref_name }}`.
+
+            Install in one command:
+
+                curl -fsSL https://raw.githubusercontent.com/CodeEagle/Jarvis/main/scripts/install-mac-app.sh | bash
+
+            Or download `JarvisMac.zip` below and run:
+
+                ditto -x -k JarvisMac.zip /tmp/jarvis-extract
+                mv /tmp/jarvis-extract/Jarvis.app /Applications/
+                xattr -dr com.apple.quarantine /Applications/Jarvis.app
+                open /Applications/Jarvis.app
+
+            macOS 13 Ventura or later · universal (arm64 + x86_64) · unsigned dev build.
+          files: ${{ github.workspace }}/JarvisMac.zip
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
