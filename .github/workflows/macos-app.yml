@@ -1,7 +1,8 @@
 name: macos-app
 
 # Builds the SwiftUI desktop app on a real macOS runner. Triggered by
-# changes under desktop/macos/ or by manual workflow_dispatch.
+# changes under desktop/macos/ + crates/** (jarvis-cli is bundled into
+# the .app), or by manual workflow_dispatch.
 #
 # The build is unsigned (no Apple Developer account in CI). Users
 # downloading the artifact will need to clear the Gatekeeper quarantine
@@ -16,18 +17,18 @@ on:
     paths:
       - 'desktop/macos/**'
       - '.github/workflows/macos-app.yml'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: build JarvisMac (unsigned)
+    name: build JarvisMac (universal, unsigned)
     runs-on: macos-14
-    timeout-minutes: 25
-    defaults:
-      run:
-        working-directory: desktop/macos
+    timeout-minutes: 35
 
     steps:
       - uses: actions/checkout@v4
@@ -37,15 +38,49 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      # ── Rust: build jarvis-cli for both arches and lipo together ──
+      # The .app embeds a universal jarvis binary at
+      # Contents/MacOS/jarvis so the app can spawn `jarvis serve` on
+      # launch without asking the user to install anything.
+      - name: Install Rust toolchain (universal targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-app-jarvis-cli
+
+      - name: Build jarvis-cli (arm64 + x86_64 → universal)
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p jarvis-cli --target aarch64-apple-darwin
+          cargo build --release --locked -p jarvis-cli --target x86_64-apple-darwin
+          mkdir -p desktop/macos/embed
+          lipo -create \
+            target/aarch64-apple-darwin/release/jarvis \
+            target/x86_64-apple-darwin/release/jarvis \
+            -output desktop/macos/embed/jarvis
+          chmod +x desktop/macos/embed/jarvis
+          file desktop/macos/embed/jarvis
+          ls -lh desktop/macos/embed/jarvis
+
+      # ── SwiftUI: generate xcodeproj then build .app ───────────────
       - name: Install xcodegen
         run: brew install xcodegen
 
       - name: Generate Xcode project
+        working-directory: desktop/macos
         run: xcodegen generate
 
       - name: Build (Release, unsigned)
+        working-directory: desktop/macos
         run: |
           set -euo pipefail
+          set -o pipefail
+          # `| xcpretty` filters output but the real exit code must
+          # propagate via `set -o pipefail`; do NOT add `|| true`.
           xcodebuild \
             -project Jarvis.xcodeproj \
             -scheme JarvisMac \
@@ -55,21 +90,11 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
             CODE_SIGN_ENTITLEMENTS= \
-            build | xcpretty || true
-          # Even with xcpretty, surface the real exit code:
-          xcodebuild \
-            -project Jarvis.xcodeproj \
-            -scheme JarvisMac \
-            -configuration Release \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY= \
-            CODE_SIGN_ENTITLEMENTS= \
-            -showBuildSettings | head -20
+            build | xcpretty
 
       - name: Locate built .app
         id: locate
+        working-directory: desktop/macos
         run: |
           set -euo pipefail
           APP_PATH=$(find build/Build/Products/Release -maxdepth 2 -name '*.app' | head -1)
@@ -82,6 +107,17 @@ jobs:
           echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
           echo "app_dir=$(dirname "$APP_PATH")" >> "$GITHUB_OUTPUT"
           echo "app_name=$(basename "$APP_PATH")" >> "$GITHUB_OUTPUT"
+
+      # ── Inject the universal Rust binary into the bundle ──────────
+      - name: Embed jarvis binary into .app/Contents/MacOS/
+        working-directory: desktop/macos
+        run: |
+          set -euo pipefail
+          APP="${{ steps.locate.outputs.app_path }}"
+          cp embed/jarvis "$APP/Contents/MacOS/jarvis"
+          chmod +x "$APP/Contents/MacOS/jarvis"
+          ls -lh "$APP/Contents/MacOS/"
+          file "$APP/Contents/MacOS/jarvis"
 
       - name: Zip .app bundle
         run: |

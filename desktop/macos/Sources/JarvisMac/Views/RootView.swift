@@ -5,6 +5,7 @@ import SwiftUI
 /// per the visual design doc.
 struct RootView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var daemon: DaemonSupervisor
     @State private var selection: Tab = .compose
 
     enum Tab: String, CaseIterable, Hashable {
@@ -26,6 +27,7 @@ struct RootView: View {
             Text("Jarvis")
                 .font(Tokens.Font.h1)
                 .foregroundStyle(Tokens.Color.fgPrimary)
+            DaemonStatusIndicator()
             Spacer()
             ForEach(Tab.allCases, id: \.self) { tab in
                 tabButton(tab)

@@ -1,14 +1,36 @@
 import SwiftUI
+import AppKit
 
 @main
 struct JarvisMacApp: App {
     @StateObject private var appState = AppState()
+    @StateObject private var daemon = DaemonSupervisor()
 
     var body: some Scene {
         WindowGroup("Jarvis") {
             RootView()
                 .environmentObject(appState)
+                .environmentObject(daemon)
                 .frame(minWidth: 720, minHeight: 480)
+                .task {
+                    // 1. Spawn / attach the embedded daemon as soon as
+                    //    the first window appears.
+                    await daemon.start()
+                }
+                .task {
+                    // 2. Mirror NSApplication.willTerminate into a
+                    //    structured shutdown of the daemon. macOS will
+                    //    SIGKILL the child anyway, but a SIGTERM gives
+                    //    SQLite a chance to flush WAL.
+                    let center = NotificationCenter.default
+                    let stream = center.notifications(
+                        named: NSApplication.willTerminateNotification
+                    )
+                    for await _ in stream {
+                        daemon.stop()
+                        break
+                    }
+                }
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
@@ -22,8 +44,7 @@ struct JarvisMacApp: App {
     }
 }
 
-/// Single source of truth shared across views. m1 keeps it minimal —
-/// just the JarvisClient instance and recent decision/memory state.
+/// Single source of truth shared across views.
 @MainActor
 final class AppState: ObservableObject {
     let client: JarvisClient
