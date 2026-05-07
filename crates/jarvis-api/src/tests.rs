@@ -201,6 +201,205 @@ async fn audit_returns_array() {
     assert_eq!(json.as_array().unwrap().len(), 1);
 }
 
+/// Concurrency stress: open N SSE clients against distinct sessions
+/// and verify each client receives only its session's events. Catches
+/// per-session filter regressions and head-of-line blocking between
+/// streams.
+#[tokio::test]
+async fn sse_stream_isolates_concurrent_clients_by_session() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let state = ApiState {
+        db: Db::in_memory().unwrap(),
+    };
+    // Seed 5 events per session for 3 sessions.
+    let sessions = ["sess_a", "sess_b", "sess_c"];
+    for sess in &sessions {
+        for i in 0..5 {
+            jarvis_db::raw_event_log::append(
+                &state.db,
+                jarvis_db::raw_event_log::AppendEvent {
+                    event_type: jarvis_db::RawEventKind::UserMessage,
+                    session_id: Some(sess),
+                    trace_id: None,
+                    agent_id: None,
+                    raw_content: &format!("{sess}-msg-{i}"),
+                    safe_content: None,
+                },
+            )
+            .unwrap();
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let arc_state = Arc::new(state);
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let svc_state = arc_state.clone();
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |req| {
+                    handle(svc_state.clone(), req, peer)
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    // Open 3 clients in parallel, each waiting for 5 events on its session.
+    let mut handles = vec![];
+    for sess in &sessions {
+        let sess = sess.to_string();
+        let handle = tokio::spawn(async move {
+            let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let req = format!(
+                "GET /sessions/{sess}/stream HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+            );
+            client.write_all(req.as_bytes()).await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut total = Vec::new();
+            let read_loop = async {
+                loop {
+                    let n = client.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    total.extend_from_slice(&buf[..n]);
+                    let s = String::from_utf8_lossy(&total);
+                    if s.matches(&format!("{sess}-msg-")).count() >= 5 {
+                        break;
+                    }
+                }
+            };
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), read_loop).await;
+            (sess, String::from_utf8_lossy(&total).to_string())
+        });
+        handles.push(handle);
+    }
+
+    // Each client must see exactly its own session's 5 events,
+    // and none of the other sessions' events.
+    for h in handles {
+        let (sess, body) = h.await.unwrap();
+        let own_count = body.matches(&format!("{sess}-msg-")).count();
+        assert!(
+            own_count >= 5,
+            "session {sess}: expected ≥5 own events, got {own_count}\n{body}",
+        );
+        for other in &sessions {
+            if *other == sess {
+                continue;
+            }
+            assert!(
+                !body.contains(&format!("{other}-msg-")),
+                "session {sess} leaked events from {other}: {body}",
+            );
+        }
+    }
+    server.abort();
+}
+
+/// Client disconnect mid-stream must not poison the server. Open
+/// then immediately close 20 client connections, then verify a
+/// fresh client can still get a clean stream.
+#[tokio::test]
+async fn sse_stream_handles_rapid_client_disconnects() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let state = ApiState {
+        db: Db::in_memory().unwrap(),
+    };
+    jarvis_db::raw_event_log::append(
+        &state.db,
+        jarvis_db::raw_event_log::AppendEvent {
+            event_type: jarvis_db::RawEventKind::UserMessage,
+            session_id: Some("sess_ds"),
+            trace_id: None,
+            agent_id: None,
+            raw_content: "before",
+            safe_content: None,
+        },
+    )
+    .unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let arc_state = Arc::new(state);
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let svc_state = arc_state.clone();
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |req| {
+                    handle(svc_state.clone(), req, peer)
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    // 20 rapid connect-and-disconnect cycles.
+    for _ in 0..20 {
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        c.write_all(
+            b"GET /sessions/sess_ds/stream HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        // Read a tiny bit then drop — simulates client tab close.
+        let mut tiny = [0u8; 64];
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            c.read(&mut tiny),
+        )
+        .await;
+        drop(c);
+    }
+
+    // Server should still serve a fresh client cleanly.
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client
+        .write_all(
+            b"GET /sessions/sess_ds/stream HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 4096];
+    let mut total = Vec::new();
+    let read = async {
+        loop {
+            let n = client.read(&mut buf).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            total.extend_from_slice(&buf[..n]);
+            if String::from_utf8_lossy(&total).contains("before") {
+                break;
+            }
+        }
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), read).await;
+    let body = String::from_utf8_lossy(&total);
+    assert!(
+        body.contains("before"),
+        "server lost the ability to serve after rapid disconnects: {body}"
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn sse_stream_emits_existing_raw_events_on_connect() {
     let state = ApiState {

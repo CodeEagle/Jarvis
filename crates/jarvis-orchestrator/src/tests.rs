@@ -1325,6 +1325,119 @@ fn durable_lock_clear_stale_removes_old_files() {
     assert!(!stale.exists());
 }
 
+/// Simulate a different process holding the lock by writing the
+/// lock file directly (as if another OS process did it). The main
+/// process MUST then refuse to acquire — this is the cross-process
+/// guarantee we rely on (FS-level mutex via `create_new(true)`).
+#[test]
+fn durable_lock_blocks_when_other_process_holds_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock_dir = dir.path().join(".jarvis").join("locks");
+    std::fs::create_dir_all(&lock_dir).unwrap();
+    // Pretend another process wrote this lock and is still alive.
+    let lock_path = lock_dir.join("task_xp.lock");
+    std::fs::write(&lock_path, r#"{"task_id":"task_xp","pid":99999}"#).unwrap();
+
+    // Our acquire MUST fail — even though the writer isn't our
+    // process, the FS-level guarantee holds.
+    let attempt = workspace::DurableWorkspaceLock::acquire(dir.path(), "task_xp");
+    assert!(
+        attempt.is_err(),
+        "lock file from another process must block acquire"
+    );
+}
+
+/// Process-crash recovery: when the lock-holder dies without
+/// releasing the file, `clear_stale_locks` must reap the orphan so
+/// future acquires succeed.
+#[test]
+fn durable_lock_recovers_after_simulated_process_crash() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock_dir = dir.path().join(".jarvis").join("locks");
+    std::fs::create_dir_all(&lock_dir).unwrap();
+    // Orphaned lock file — the original process is gone.
+    let orphan = lock_dir.join("task_crashed.lock");
+    std::fs::write(&orphan, r#"{"task_id":"task_crashed","pid":1}"#).unwrap();
+
+    // Acquire blocked by the orphan…
+    assert!(
+        workspace::DurableWorkspaceLock::acquire(dir.path(), "task_crashed").is_err(),
+        "acquire blocked by orphan",
+    );
+    // …until clear_stale_locks reaps it.
+    let removed = workspace::DurableWorkspaceLock::clear_stale_locks(
+        dir.path(),
+        std::time::Duration::from_secs(0),
+    )
+    .unwrap();
+    assert_eq!(removed, 1);
+    // Now acquire succeeds.
+    let _again = workspace::DurableWorkspaceLock::acquire(dir.path(), "task_crashed")
+        .expect("acquire after orphan reap");
+}
+
+/// Spawn a real child process that holds the lock file open, verify
+/// our acquire blocks while the child is alive, then kill the child
+/// (simulating crash) and confirm clear_stale_locks + re-acquire.
+/// This is the closest we can get to a true cross-process test
+/// without shipping a separate test binary.
+#[test]
+fn durable_lock_real_subprocess_holds_then_releases() {
+    use std::process::{Command, Stdio};
+    let dir = tempfile::tempdir().unwrap();
+    let lock_dir = dir.path().join(".jarvis").join("locks");
+    std::fs::create_dir_all(&lock_dir).unwrap();
+    let lock_path = lock_dir.join("task_sub.lock");
+
+    // Spawn /bin/sh that creates the lock file then sleeps. Holds
+    // the workspace-locked invariant from another OS process.
+    let lock_path_str = lock_path.to_str().unwrap().to_string();
+    let mut child = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "echo '{{\"pid\":'$$'}}' > '{lock_path_str}'; sleep 30",
+        ))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn subprocess");
+
+    // Wait briefly for the lock file to land.
+    let mut ready = false;
+    for _ in 0..50 {
+        if lock_path.exists() {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(ready, "subprocess didn't write lock file");
+
+    // Our acquire MUST fail while subprocess holds the file.
+    assert!(
+        workspace::DurableWorkspaceLock::acquire(dir.path(), "task_sub").is_err(),
+        "acquire blocked while subprocess holds the file"
+    );
+
+    // Simulate crash.
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Lock file is still there (subprocess didn't clean up).
+    assert!(lock_path.exists(), "orphan lock file remains after crash");
+
+    // Sweep + re-acquire.
+    let removed = workspace::DurableWorkspaceLock::clear_stale_locks(
+        dir.path(),
+        std::time::Duration::from_secs(0),
+    )
+    .unwrap();
+    assert!(removed >= 1);
+    let _ = workspace::DurableWorkspaceLock::acquire(dir.path(), "task_sub")
+        .expect("re-acquire after crash + sweep");
+}
+
 // ── interrupt protocol (Section 30.2.3) ─────────────────────────────────
 
 #[test]
