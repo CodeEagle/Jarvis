@@ -82,11 +82,18 @@ jobs:
           set -o pipefail
           # `| xcpretty` filters output but the real exit code must
           # propagate via `set -o pipefail`; do NOT add `|| true`.
+          # ARCHS + ONLY_ACTIVE_ARCH=NO force a universal build of the
+          # SwiftUI binary; otherwise xcodebuild only emits the
+          # runner's native arch (arm64 on macos-14) and Intel Macs
+          # can't run the .app even though the embedded Rust CLI is
+          # universal.
           xcodebuild \
             -project Jarvis.xcodeproj \
             -scheme JarvisMac \
             -configuration Release \
             -derivedDataPath build \
+            ARCHS="x86_64 arm64" \
+            ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
@@ -128,8 +135,16 @@ jobs:
           cp embed/jarvis "$APP/Contents/Resources/jarvis-cli"
           chmod +x "$APP/Contents/Resources/jarvis-cli"
           ls -lh "$APP/Contents/MacOS/" "$APP/Contents/Resources/"
-          file "$APP/Contents/MacOS/Jarvis"
-          file "$APP/Contents/Resources/jarvis-cli"
+          # Belt-and-braces: assert the SwiftUI binary survived the
+          # embed (case-insensitive APFS bug, fixed by relocating to
+          # Resources, but this guard catches any regression early).
+          file "$APP/Contents/MacOS/Jarvis" | tee /dev/stderr | grep -q "Mach-O" \
+            || { echo "::error::main exec at Contents/MacOS/Jarvis is not Mach-O"; exit 1; }
+          file "$APP/Contents/Resources/jarvis-cli" | grep -q "universal binary" \
+            || { echo "::error::embedded jarvis-cli is not universal"; exit 1; }
+          # Both binaries should be universal post-fix.
+          file "$APP/Contents/MacOS/Jarvis" | grep -q "universal binary" \
+            || echo "::warning::SwiftUI main exec is not universal — Intel Macs will not launch"
 
       - name: Zip .app bundle
         run: |
