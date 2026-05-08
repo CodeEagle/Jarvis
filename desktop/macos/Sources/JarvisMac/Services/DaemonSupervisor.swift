@@ -91,8 +91,13 @@ final class DaemonSupervisor: ObservableObject {
     private func spawn() async throws {
         state = .spawning
 
+        // Bundled Rust CLI lives in Contents/Resources/, NOT
+        // Contents/MacOS/ — the .app's main executable is named
+        // `Jarvis` (CFBundleExecutable) and macOS's case-insensitive
+        // APFS would collide a Contents/MacOS/jarvis file with the
+        // SwiftUI binary, clobbering it during the `cp` in CI.
         let binURL = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/MacOS/jarvis")
+            .appendingPathComponent("Contents/Resources/jarvis-cli")
         guard FileManager.default.isExecutableFile(atPath: binURL.path) else {
             throw NSError(
                 domain: "DaemonSupervisor", code: 1,

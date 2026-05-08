@@ -113,15 +113,23 @@ jobs:
           echo "app_name=$(basename "$APP_PATH")" >> "$GITHUB_OUTPUT"
 
       # ── Inject the universal Rust binary into the bundle ──────────
-      - name: Embed jarvis binary into .app/Contents/MacOS/
+      # Place it under Contents/Resources/, NOT Contents/MacOS/ — the
+      # macOS runner uses case-insensitive APFS, where
+      # Contents/MacOS/Jarvis (SwiftUI main exec, capital J) and
+      # Contents/MacOS/jarvis (Rust CLI, lowercase j) collide as the
+      # same path and the cp clobbers the main exec. Separate
+      # directory avoids the collision regardless of filename casing.
+      - name: Embed jarvis binary into .app/Contents/Resources/
         working-directory: desktop/macos
         run: |
           set -euo pipefail
           APP="${{ steps.locate.outputs.app_path }}"
-          cp embed/jarvis "$APP/Contents/MacOS/jarvis"
-          chmod +x "$APP/Contents/MacOS/jarvis"
-          ls -lh "$APP/Contents/MacOS/"
-          file "$APP/Contents/MacOS/jarvis"
+          mkdir -p "$APP/Contents/Resources"
+          cp embed/jarvis "$APP/Contents/Resources/jarvis-cli"
+          chmod +x "$APP/Contents/Resources/jarvis-cli"
+          ls -lh "$APP/Contents/MacOS/" "$APP/Contents/Resources/"
+          file "$APP/Contents/MacOS/Jarvis"
+          file "$APP/Contents/Resources/jarvis-cli"
 
       - name: Zip .app bundle
         run: |
