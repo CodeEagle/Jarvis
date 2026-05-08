@@ -51,7 +51,7 @@ if [[ "$MAJOR" -lt 13 ]]; then
 fi
 ok "macOS $(sw_vers -productVersion) · $(uname -m)"
 
-TMP=$(mktemp -d -t jarvis-install)
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/jarvis-install.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 
 # ── 2. Download ──────────────────────────────────────────────────
