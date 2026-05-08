@@ -34,7 +34,21 @@ actor JarvisClient {
         )
         let (data, resp) = try await session.data(for: req)
         try Self.checkOK(resp, data: data)
-        return try decoder.decode(RouteDecision.self, from: data)
+        // The API wraps the decision in an envelope; older builds
+        // tried to decode RouteDecision directly and produced "the
+        // data couldn't be read because it is missing".
+        let envelope = try decoder.decode(RouteEnvelope.self, from: data)
+        return envelope.decision
+    }
+
+    // MARK: Health
+
+    func healthz() async throws -> Bool {
+        let url = baseURL.appendingPathComponent("healthz")
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2
+        let (_, resp) = try await session.data(for: req)
+        return (resp as? HTTPURLResponse)?.statusCode == 200
     }
 
     // MARK: Memory

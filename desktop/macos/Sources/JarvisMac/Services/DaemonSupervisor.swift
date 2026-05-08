@@ -32,6 +32,12 @@ final class DaemonSupervisor: ObservableObject {
     private let baseURL: URL
     private let logger = Logger(subsystem: "ai.jarvis.mac", category: "daemon")
 
+    /// Optional secrets source — when set, the supervisor reads it
+    /// at spawn time and injects every entry as an env var into the
+    /// child `jarvis serve` process. Kept weak-via-closure so the
+    /// store's lifecycle doesn't depend on us.
+    var secretsProvider: (() -> [String: String])?
+
     init(baseURL: URL = URL(string: "http://127.0.0.1:7777")!) {
         self.baseURL = baseURL
     }
@@ -72,6 +78,15 @@ final class DaemonSupervisor: ObservableObject {
         stderrTask?.cancel()
         stderrTask = nil
         state = .idle
+    }
+
+    /// stop() + start() — used by SettingsView when the user changes
+    /// the model or pastes a new API key.
+    func restart() async {
+        stop()
+        // Brief pause so the previous process actually releases 7777.
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        await start()
     }
 
     // MARK: -
@@ -126,6 +141,14 @@ final class DaemonSupervisor: ObservableObject {
         // App-support is also where logs / config live; let the CLI
         // default JARVIS_LOG to info if the user hasn't overridden.
         env["JARVIS_LOG"] = env["JARVIS_LOG"] ?? "info"
+        // Inject any user-provided secrets (API keys, etc.) so the
+        // daemon can authenticate against upstream providers without
+        // the user ever seeing a terminal.
+        if let provided = secretsProvider?() {
+            for (k, v) in provided {
+                env[k] = v
+            }
+        }
         p.environment = env
         p.currentDirectoryURL = appSupport
 

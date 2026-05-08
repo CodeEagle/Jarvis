@@ -3,25 +3,41 @@ import AppKit
 
 @main
 struct JarvisMacApp: App {
-    @StateObject private var appState = AppState()
-    @StateObject private var daemon = DaemonSupervisor()
+    @StateObject private var appState     = AppState()
+    @StateObject private var daemon       = DaemonSupervisor()
+    @StateObject private var secrets      = SecretsStore()
+    @StateObject private var modelConfig  = ModelConfigService()
+    @StateObject private var speech       = SpeechCoordinator()
+
+    init() {
+        // No-op; .task on the WindowGroup wires daemon ↔ secrets so
+        // every spawned `jarvis serve` inherits user-provided env
+        // vars (API keys, etc.).
+    }
 
     var body: some Scene {
         WindowGroup("Jarvis") {
             RootView()
                 .environmentObject(appState)
                 .environmentObject(daemon)
+                .environmentObject(secrets)
+                .environmentObject(modelConfig)
+                .environmentObject(speech)
                 .frame(minWidth: 720, minHeight: 480)
                 .task {
-                    // 1. Spawn / attach the embedded daemon as soon as
-                    //    the first window appears.
+                    // Wire SecretsStore → DaemonSupervisor before
+                    // start(), so the very first spawn already sees
+                    // user-saved API keys. The closure captures
+                    // `secrets` weakly via @MainActor isolation.
+                    daemon.secretsProvider = { [weak secrets] in
+                        secrets?.snapshot() ?? [:]
+                    }
                     await daemon.start()
                 }
                 .task {
-                    // 2. Mirror NSApplication.willTerminate into a
-                    //    structured shutdown of the daemon. macOS will
-                    //    SIGKILL the child anyway, but a SIGTERM gives
-                    //    SQLite a chance to flush WAL.
+                    // SIGTERM the daemon on app quit so SQLite WAL
+                    // can flush. macOS would SIGKILL anyway but TERM
+                    // is courteous.
                     let center = NotificationCenter.default
                     let stream = center.notifications(
                         named: NSApplication.willTerminateNotification

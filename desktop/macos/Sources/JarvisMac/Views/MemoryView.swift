@@ -106,7 +106,7 @@ private struct MemoryRow: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: Tokens.Space.m) {
-                if let t = item.memoryType {
+                if let t = item.type {
                     Text(t).font(Tokens.Font.caption).foregroundStyle(Tokens.Color.fgMuted)
                 }
                 if let s = item.trustScore {
@@ -115,7 +115,9 @@ private struct MemoryRow: View {
                         .foregroundStyle(Tokens.Color.fgMuted)
                 }
                 if let tier = item.tier {
-                    Text(tier).font(Tokens.Font.caption).foregroundStyle(Tokens.Color.fgMuted)
+                    Text("tier \(tier)")
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Color.fgMuted)
                 }
                 Spacer()
                 Text(String(item.id.prefix(16)))

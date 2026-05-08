@@ -1,16 +1,18 @@
 import SwiftUI
 
-/// Top-level container. m1 is intentionally simple — two tabs in a
-/// single window. m2 will replace this with a three-pane NSSplitView
-/// per the visual design doc.
+/// Top-level container. Three tabs: Voice (default; press-to-talk
+/// home screen), Memory (browser), Settings (model + API key). m2
+/// will introduce the Compact-vs-Expanded split per
+/// `docs/design/macos-visual.md`.
 struct RootView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var daemon: DaemonSupervisor
-    @State private var selection: Tab = .compose
+    @State private var selection: Tab = .voice
 
     enum Tab: String, CaseIterable, Hashable {
-        case compose = "Compose"
-        case memory  = "Memory"
+        case voice    = "Voice"
+        case memory   = "Memory"
+        case settings = "Settings"
     }
 
     var body: some View {
@@ -60,10 +62,9 @@ struct RootView: View {
     @ViewBuilder
     private var content: some View {
         switch selection {
-        case .compose:
-            ComposeView()
-        case .memory:
-            MemoryView()
+        case .voice:    VoiceView()
+        case .memory:   MemoryView()
+        case .settings: SettingsView()
         }
     }
 }

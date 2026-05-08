@@ -77,11 +77,33 @@ log stream --predicate 'subsystem == "ai.jarvis.mac"' --info
 
 ## What you can do in m1
 
-- **Compose tab** — type a message, ⌘↩ or click Send → calls
-  `POST /router/input`, renders the resulting `RouteDecision` in a
-  card (agent, intent, confidence, router notes, trace id)
+- **Voice tab** (default) — press-and-hold the mic to speak; release
+  sends the transcript to `POST /router/input` and renders the
+  `RouteDecision` card. Falls back to a text input row at the bottom
+  when mic / speech permissions aren't granted. STT-only — TTS
+  arrives in m3 with auto-VAD and barge-in.
 - **Memory tab** — lists memories from `GET /memory/global`; pull
-  `Refresh` to reload
+  `Refresh` to reload.
+- **Settings tab** — pick a default model from presets or type any
+  `provider/model` id; paste your `ANTHROPIC_API_KEY` /
+  `OPENAI_API_KEY` etc. without opening a terminal. Saving restarts
+  the embedded daemon so the new env reaches it.
+
+### Permissions
+
+On first launch the Voice tab asks for **Microphone** and **Speech
+Recognition** access. Both can be revisited in
+*System Settings → Privacy & Security*. STT runs on-device — no audio
+leaves the machine.
+
+### Where data lives
+
+| | path |
+|---|---|
+| SQLite | `~/Library/Application Support/Jarvis/jarvis.db` |
+| Provider config | `~/.jarvis/config.toml` (managed by Settings) |
+| Provider OAuth tokens | `~/.jarvis/auth/<provider>.json` (`jarvis model login`) |
+| API keys | `~/Library/Application Support/Jarvis/secrets.json` (mode 0600) |
 
 ## Build locally on a Mac
 
